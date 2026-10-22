@@ -1,8 +1,8 @@
 
-> A desktop-grade web editor for Prolog-based knowledge graphs — with an
-> interactive PyVis visualization, colored tables, Prolog syntax
-> highlighting, natural-language import and a built-in PyAgentProlog
-> query engine.
+# A desktop-grade web editor for Prolog-based knowledge graphs 
+> with an interactive PyVis visualization, colored tables, 
+> Prolog syntax highlighting, natural-language import and 
+> a built-in PyAgentProlog query engine.
 
 ---
 
@@ -446,18 +446,29 @@ show a friendly warning and the rest of the editor keeps working.
 ## Project structure
 
 ```
-kg-editor/
-├── app.py              # Gradio UI, handlers, theme, wiring
-├── graph_model.py      # KnowledgeGraph model + Prolog (de)serialization
-├── graph_layout.py     # PyVis rendering (primary) + SVG (fallback)
-├── text_to_prolog.py   # optional: NL → Prolog
-├── docs/
-│   ├── screenshot.png
-│   ├── editor.png
-│   ├── prolog-view.png
-│   └── query.png
+kg-editor/                      
+├── pyproject.toml              
 ├── README.md
-└── LICENSE
+├── LICENSE                     
+├── .gitignore                  
+├── MANIFEST.in                 
+│
+├── kg_editor/                  
+│   ├── __init__.py             
+│   ├── __main__.py             
+│   ├── app.py                  
+│   ├── graph_model.py          
+│   ├── graph_layout.py         
+│   ├── text_to_prolog.py       
+│   └── assets/
+│       └── favicon.png        
+│
+├── docs/
+│   └── guide-ru.md            
+└── tests/
+    ├── __init__.py
+    ├── test_graph_model.py    
+    └── test_app.py            
 ```
 
 ### File responsibilities
