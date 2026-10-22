@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kg-editor"
+version = "0.1.0"
+description = "A web editor for Prolog-based knowledge graphs with PyVis visualization"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Andrey Vorfolomeev" },
+]
+keywords = ["prolog", "knowledge-graph", "gradio", "pyvis", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: Gradio",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: User Interfaces",
+]
+
+dependencies = [
+    "gradio>=4.0",
+    "pyvis>=0.3",
+]
+
+[project.optional-dependencies]
+# Установить вместе с pyagentprolog: pip install kg-editor[full]
+# (сам pyagentprolog ставится отдельно — см. README)
+full = [
+    "pymorphy3",
+    "sentence-transformers",
+]
+dev = [
+    "pytest>=7",
+    "black",
+    "ruff",
+]
+
+[project.scripts]
+kg-editor = "kg_editor.app:main"
+
+[project.urls]
+Homepage = "https://github.com/binom0x/kg-editor"
+Repository = "https://github.com/binom0x/kg-editor"
+Issues = "https://github.com/binom0x/kg-editor/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["kg_editor*"]
+
+[tool.setuptools.package-data]
+kg_editor = [
+    "assets/*.png",
+    "assets/*.ico",
+    "assets/*.svg",
+]
