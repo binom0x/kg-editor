@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Andrey Vorfolomeev" },
+    { name = "Andrey Vorfolomeev", email = "binom0x@proton.me" },
 ]
 keywords = ["prolog", "knowledge-graph", "gradio", "pyvis", "agent"]
 classifiers = [

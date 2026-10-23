@@ -23,13 +23,18 @@
 живут только в рамках одного запроса и не влияют на модель графа.
 
 Редактор: цветные HTML-таблицы + полноценная подсветка Prolog-исходника.
+NL-импорт: встроенный text_to_prolog.py или любой пользовательский .py
+с классом TextToProlog (выбирается через UI).
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import re
+import sys as _sys
 import traceback
+import uuid as _uuid
 from html import escape as _esc
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -69,7 +74,7 @@ except Exception as _e:  # noqa: BLE001
     _AGENT_ERR = str(_e)
 
 # ---------------------------------------------------------------------
-# NL-импорт (опционально)
+# NL-импорт (опционально; пользователь может заменить через UI)
 # ---------------------------------------------------------------------
 try:
     try:
@@ -687,8 +692,16 @@ def _serialize_and_preview(g):
 
 
 # ---- Диалоги выбора файлов -------------------------------------------
-def _pick_file(initial: str = "", title: str = "Выберите .pl файл",
-               save: bool = False) -> Optional[str]:
+def _pick_file(initial: str = "", title: str = "Выберите файл",
+               save: bool = False,
+               filetypes: Optional[List[Tuple[str, str]]] = None
+               ) -> Optional[str]:
+    """Нативный диалог выбора/сохранения файла.
+
+    filetypes: список (label, patterns) — по умолчанию .pl + все файлы.
+    """
+    if filetypes is None:
+        filetypes = [("Prolog (*.pl)", "*.pl"), ("All files", "*.*")]
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -708,13 +721,12 @@ def _pick_file(initial: str = "", title: str = "Выберите .pl файл",
             p = filedialog.asksaveasfilename(
                 initialdir=init_dir, title=title,
                 defaultextension=".pl",
-                filetypes=[("Prolog (*.pl)", "*.pl"), ("All files", "*.*")],
+                filetypes=filetypes,
             )
         else:
             p = filedialog.askopenfilename(
                 initialdir=init_dir, title=title,
-                filetypes=[("Prolog (*.pl)", "*.pl"),
-                           ("All files", "*.*")],
+                filetypes=filetypes,
             )
         root.destroy()
         return p or None
@@ -746,6 +758,79 @@ def _pick_folder(initial: str = "", title: str = "Папка проекта") ->
     except Exception as e:
         print(f"[_pick_folder] {e}")
         return None
+
+
+# =====================================================================
+# Загрузка пользовательского TextToProlog из .py-файла
+# =====================================================================
+def _h_pick_t2p() -> str:
+    """Открыть диалог и вернуть выбранный путь к .py-модулю."""
+    p = _pick_file(
+        title="Выберите модуль text-to-prolog (.py)",
+        filetypes=[("Python (*.py)", "*.py"), ("All files", "*.*")],
+    )
+    return p or ""
+
+
+def h_load_t2p_module(path: str):
+    """Загружает класс TextToProlog из указанного .py-файла.
+
+    Возвращает (класс | None, HTML-статус).
+
+    Порядок:
+      1. Проверить путь (файл существует, это .py).
+      2. Добавить папку файла в sys.path (для локальных импортов внутри модуля).
+      3. Загрузить через importlib с уникальным именем (чтобы не
+         конфликтовать с уже импортированными модулями).
+      4. Проверить наличие класса TextToProlog и его инстанцируемость.
+      5. В случае ошибки — очистить sys.modules и вернуть None.
+    """
+    path = (path or "").strip()
+    if not path:
+        return None, _status_html("✗ Укажите путь к .py-файлу")
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        return None, _status_html(f"✗ Файл не найден: {path}")
+    if not path.endswith(".py"):
+        return None, _status_html(
+            f"✗ Ожидался .py-файл, получено: {path}")
+
+    mod_dir = os.path.dirname(path)
+    if mod_dir and mod_dir not in _sys.path:
+        _sys.path.insert(0, mod_dir)
+
+    unique_name = f"_kg_editor_custom_t2p_{_uuid.uuid4().hex[:8]}"
+    try:
+        spec = importlib.util.spec_from_file_location(unique_name, path)
+        if spec is None or spec.loader is None:
+            return None, _status_html(
+                f"✗ Не удалось создать загрузчик для: {path}")
+        module = importlib.util.module_from_spec(spec)
+        _sys.modules[unique_name] = module
+        spec.loader.exec_module(module)
+    except Exception as e:  # noqa: BLE001
+        _sys.modules.pop(unique_name, None)
+        return None, _status_html(
+            f"✗ Ошибка импорта {path}:\n{e}\n\n{traceback.format_exc()}")
+
+    if not hasattr(module, "TextToProlog"):
+        _sys.modules.pop(unique_name, None)
+        return None, _status_html(
+            f"✗ В модуле нет класса TextToProlog: {path}")
+
+    cls = module.TextToProlog
+    try:
+        cls()  # sanity check: конструктор без аргументов
+    except Exception as e:  # noqa: BLE001
+        _sys.modules.pop(unique_name, None)
+        return None, _status_html(
+            f"✗ Класс TextToProlog не инициализируется без аргументов:\n"
+            f"{e}")
+
+    return cls, _status_html(
+        f"✓ Загружен модуль: {path}\n"
+        f"  класс: TextToProlog\n"
+        f"  as sys.modules['{unique_name}']")
 
 
 # =====================================================================
@@ -810,18 +895,35 @@ def h_del_attr(g, idx_str):
 # =====================================================================
 # Handlers — импорт/экспорт/проект
 # =====================================================================
-def h_import_nl(g, text):
+def h_import_nl(g, text, t2p_cls=None):
+    """Импорт графа из естественного языка.
+
+    t2p_cls: пользовательский класс TextToProlog (или None — использовать
+    встроенный). Класс должен предоставлять метод
+    `convert(text, mode="graph") -> str`, возвращающий Prolog-исходник.
+    """
     g = _safe(g)
-    if not _T2P_OK:
+
+    # Выбираем источник класса
+    cls = t2p_cls if t2p_cls is not None else (TextToProlog if _T2P_OK else None)
+    if cls is None:
         return _status_html(
-            "✗ text_to_prolog.py недоступен — убедитесь, что он в sys.path.")
+            "✗ text_to_prolog недоступен. Выберите файл модуля "
+            "в блоке «⚙️ Пользовательский конвертер» "
+            "или положите text_to_prolog.py в sys.path.")
+
     if not (text or "").strip():
         return _status_html("✗ Пустой текст")
+
+    source_label = (f"пользовательский ({getattr(cls, '__module__', '?')})"
+                    if t2p_cls is not None else "встроенный")
+
     try:
-        t2p = TextToProlog()
+        t2p = cls()
         prolog_src = t2p.convert(text, mode="graph")
         if not prolog_src.strip():
-            return _status_html("✗ Не удалось извлечь факты")
+            return _status_html(
+                f"✗ Не удалось извлечь факты (источник: {source_label})")
         new_g = KnowledgeGraph.from_prolog(prolog_src)
         for n in new_g.nodes.values():
             g.add_node(n.id, n.type, n.props)
@@ -830,9 +932,11 @@ def h_import_nl(g, text):
         for a in new_g.attributes:
             g.add_attribute(a.entity, a.name, a.value)
         return _status_html(
-            f"✓ Импортировано: +{len(new_g.nodes)} узлов, "
-            f"+{len(new_g.edges)} рёбер, +{len(new_g.attributes)} атрибутов")
-    except Exception as e:
+            f"✓ Импортировано ({source_label}): "
+            f"+{len(new_g.nodes)} узлов, "
+            f"+{len(new_g.edges)} рёбер, "
+            f"+{len(new_g.attributes)} атрибутов")
+    except Exception as e:  # noqa: BLE001
         return _status_html(f"✗ {e}\n{traceback.format_exc()}")
 
 
@@ -847,7 +951,9 @@ def h_parse_source(g, code):
 
 
 def h_open_file(g):
-    p = _pick_file(title="Открыть .pl графа")
+    p = _pick_file(title="Открыть .pl графа",
+                   filetypes=[("Prolog (*.pl)", "*.pl"),
+                              ("All files", "*.*")])
     if not p:
         return _refresh(_safe(g)) + (_status_html("Файл не выбран"),)
     try:
@@ -864,7 +970,9 @@ def h_open_file(g):
 
 def h_save_file(g, current_path):
     g = _safe(g)
-    p = current_path or _pick_file(title="Сохранить граф как...", save=True)
+    p = current_path or _pick_file(
+        title="Сохранить граф как...", save=True,
+        filetypes=[("Prolog (*.pl)", "*.pl"), ("All files", "*.*")])
     if not p:
         return _status_html("✗ Файл не выбран"), current_path
     try:
@@ -972,6 +1080,7 @@ def build_ui() -> gr.Blocks:
     with gr.Blocks(**_blocks_kwargs) as ui:
         graph_state = gr.State(KnowledgeGraph())
         current_path = gr.State("")
+        t2p_cls_state = gr.State(None)   # загруженный пользовательский класс
 
         with gr.Row(equal_height=False):
             # ==========================================================
@@ -1004,7 +1113,38 @@ def build_ui() -> gr.Blocks:
                                        elem_classes=["compact-btn"])
                     nl_status = gr.HTML(_status_html(
                         "Готов." if _T2P_OK
-                        else "text_to_prolog.py недоступен."))
+                        else "Встроенный text_to_prolog.py недоступен — "
+                             "выберите модуль ниже."))
+
+                    # --- Выбор пользовательского конвертера ---
+                    with gr.Accordion("⚙️ Пользовательский конвертер "
+                                      "(опционально)", open=False):
+                        gr.Markdown(
+                            "По умолчанию используется встроенный "
+                            "`text_to_prolog.py`. Можно указать другой "
+                            "`.py`-файл с классом **`TextToProlog`** "
+                            "и методом `convert(text, mode=\"graph\")`."
+                        )
+                        t2p_path_in = gr.Textbox(
+                            placeholder="Путь к .py-файлу "
+                                        "(можно выбрать кнопкой 📂)",
+                            show_label=False, lines=1,
+                            elem_classes=["compact-tb"],
+                        )
+                        with gr.Row(equal_height=True):
+                            t2p_pick_btn = gr.Button(
+                                "📂 Выбрать .py", size="sm",
+                                elem_classes=["compact-btn"])
+                            t2p_load_btn = gr.Button(
+                                "✅ Загрузить", size="sm",
+                                elem_classes=["compact-btn"])
+                            t2p_reset_btn = gr.Button(
+                                "↺ Встроенный", size="sm",
+                                elem_classes=["compact-btn"])
+                        t2p_status = gr.HTML(_status_html(
+                            "Используется встроенный text_to_prolog.py"
+                            if _T2P_OK
+                            else "Встроенный недоступен — выберите файл вручную"))
 
                 with gr.Accordion("📥 Импорт из Prolog", open=False):
                     import_code = gr.Code(
@@ -1177,9 +1317,27 @@ def build_ui() -> gr.Blocks:
             stats_html, graph_html,
         ]
 
+        # --- пользовательский TextToProlog ---
+        t2p_pick_btn.click(_h_pick_t2p, [], [t2p_path_in])
+        t2p_load_btn.click(h_load_t2p_module, [t2p_path_in],
+                           [t2p_cls_state, t2p_status])
+        t2p_reset_btn.click(
+            lambda: (
+                None,
+                _status_html(
+                    "↺ Используется встроенный text_to_prolog.py"
+                    if _T2P_OK
+                    else "↺ Сброшено (встроенный недоступен)"),
+            ),
+            [], [t2p_cls_state, t2p_status])
+
         # --- импорт ---
-        nl_btn.click(h_import_nl, [graph_state, nl_text], [nl_status]).then(
-            lambda g: _refresh(g), [graph_state], refresh_outs)
+        nl_btn.click(
+            h_import_nl,
+            [graph_state, nl_text, t2p_cls_state],
+            [nl_status],
+        ).then(lambda g: _refresh(g), [graph_state], refresh_outs)
+
         import_btn.click(h_parse_source, [graph_state, import_code],
                          [graph_state, src_status]).then(
             lambda g: _refresh(g), [graph_state], refresh_outs)
@@ -1259,23 +1417,23 @@ def build_ui() -> gr.Blocks:
         help_btn.click(_help, [], [query_status])
 
         # --- диагностика ---
-        def _diag(g):
+        def _diag(g, t2p_cls):
             g = _safe(g)
             info = {
                 "summary": g.summary(),
                 "pyagentprolog": _AGENT_OK,
-                "text_to_prolog": _T2P_OK,
+                "text_to_prolog": (
+                    "custom" if t2p_cls is not None else _T2P_OK
+                ),
                 "node_types": sorted({n.type for n in g.nodes.values()}),
                 "predicates": sorted({e.predicate for e in g.edges}),
             }
-            if _AGENT_OK:
-                try:
-                    info["agent_smoke_test"] = "ok"
-                except Exception as e:
-                    info["agent_smoke_test"] = str(e)
+            if t2p_cls is not None:
+                info["text_to_prolog_module"] = getattr(
+                    t2p_cls, "__module__", repr(t2p_cls))
             return info
 
-        diag_btn.click(_diag, [graph_state], [diag_json])
+        diag_btn.click(_diag, [graph_state, t2p_cls_state], [diag_json])
 
         return ui
 
@@ -1295,14 +1453,6 @@ def launch(share: bool = False, host: str = "127.0.0.1",
     )
 
     def _find_favicon() -> Optional[str]:
-        """Ищет favicon в двух местах, в порядке приоритета:
-
-        1. <app_dir>/favicon.{png,ico,svg}        — плоская структура
-        2. <app_dir>/assets/favicon.{png,ico,svg} — пакетная структура
-           (kg_editor/assets/…)
-
-        Возвращает абсолютный путь к найденному файлу или None.
-        """
         here = os.path.dirname(os.path.abspath(__file__))
         for subdir in ("", "assets"):
             for name in ("favicon.png", "favicon.ico", "favicon.svg"):
@@ -1311,7 +1461,7 @@ def launch(share: bool = False, host: str = "127.0.0.1",
                 if os.path.isfile(path):
                     return path
         return None
-        
+
     _favicon = _find_favicon()
     if _favicon:
         launch_kwargs["favicon_path"] = _favicon
@@ -1320,7 +1470,7 @@ def launch(share: bool = False, host: str = "127.0.0.1",
         _here = os.path.dirname(os.path.abspath(__file__))
         print(f"[kg-editor] favicon not found "
               f"(looked in: {_here}, {os.path.join(_here, 'assets')})")
-              
+
     if _LAUNCH_THEME:
         launch_kwargs.update(
             theme=_make_theme(),
