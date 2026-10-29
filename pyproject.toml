@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kg-editor"
-version = "0.1.0"
+version = "1.1.1"
 description = "A web editor for Prolog-based knowledge graphs with PyVis visualization"
 readme = "README.md"
 requires-python = ">=3.10"

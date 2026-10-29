@@ -106,14 +106,19 @@ _PYVIS_OPTIONS = """{
     }
   },
   "edges": {
+    "width": 2.5,
     "smooth": { "type": "dynamic" },
-    "color": { "color": "#4a5260", "highlight": "#58a6ff" },
-    "arrows": { "to": { "enabled": true, "scaleFactor": 0.7 } },
+    "color": {
+      "color": "#8b949e",
+      "highlight": "#58a6ff",
+      "hover": "#a5d6ff"
+    },
+    "arrows": { "to": { "enabled": true, "scaleFactor": 0.8 } },
     "font": {
       "color": "#79c0ff",
-      "size": 11,
+      "size": 12,
       "face": "ui-monospace, monospace",
-      "strokeWidth": 3,
+      "strokeWidth": 4,
       "strokeColor": "#21262d",
       "align": "middle"
     }
@@ -125,12 +130,7 @@ def render_pyvis(graph,
                  height_ratio: str = "12/7",
                  max_height: int = 700,
                  min_height: int = 400) -> str:
-    """Строит интерактивный PyVis-граф и вкладывает его в iframe (srcdoc).
-
-    Размер подстраивается под ширину колонки (aspect-ratio 12/7),
-    с ограничениями min_height..max_height — точно так же, как раньше
-    вёл себя SVG (width:100%; aspect-ratio:1200/700; max-height:700px).
-    """
+    """Строит интерактивный PyVis-граф и вкладывает его в iframe (srcdoc)."""
     if not _PYVIS_OK:
         return _empty_html(
             "PyVis не установлен.",
@@ -138,7 +138,7 @@ def render_pyvis(graph,
         )
     if graph is None or not getattr(graph, "nodes", None):
         return _empty_html(
-            "Граф пуст.",
+            "",
             "Добавьте узлы — здесь появится интерактивная схема."
         )
 
@@ -150,6 +150,28 @@ def render_pyvis(graph,
                 deg[e.source] += 1
             if e.target in deg:
                 deg[e.target] += 1
+
+        # Вычисляем минимальную и максимальную степень для нормализации
+        if deg:
+            min_deg = min(deg.values())
+            max_deg = max(deg.values())
+        else:
+            min_deg = max_deg = 0
+
+        def _calc_node_size(d: int) -> int:
+            min_size = 16
+            max_size = 40  # Жесткий предел, чтобы хабы не закрывали весь экран
+            if max_deg == min_deg:
+                return (min_size + max_size) // 2
+            
+            # Нормализация: значение от 0 до 1
+            norm = (d - min_deg) / (max_deg - min_deg)
+            
+            # Квадратный корень делает рост размера плавным:
+            # если у узла 10% связей от максимального, он вырастет не на 10%, а на ~31%
+            scale = norm ** 0.5
+            
+            return int(min_size + scale * (max_size - min_size))
 
         # ---- Строим сеть ----
         net = Network(
@@ -164,7 +186,7 @@ def render_pyvis(graph,
         # ---- Узлы ----
         for nid, n in graph.nodes.items():
             color = _type_color(n.type)
-            size = 16 + min(16, int((deg.get(nid, 0) ** 0.5) * 4))
+            size = _calc_node_size(deg.get(nid, 0))
             net.add_node(
                 nid,
                 label=nid,
@@ -181,7 +203,7 @@ def render_pyvis(graph,
                 size=size,
             )
 
-        # ---- Рёбра ----
+        # ---- Рёбра (с увеличенной толщиной и контрастным цветом) ----
         for e in graph.edges:
             if e.source not in graph.nodes or e.target not in graph.nodes:
                 continue
@@ -190,13 +212,14 @@ def render_pyvis(graph,
                 label=e.predicate,
                 title=f"{e.source} —[{e.predicate}]→ {e.target}",
                 arrows="to",
-                color={"color": "#3a4250", "highlight": "#58a6ff"},
+                width=2.5,
+                color={"color": "#8b949e", "highlight": "#58a6ff", "hover": "#a5d6ff"},
                 font={
                     "color": "#79c0ff",
-                    "size": 11,
+                    "size": 12,
                     "face": "ui-monospace, monospace",
-                    "strokeWidth": 3,
-                    "strokeColor": "#0b0d11",
+                    "strokeWidth": 4,
+                    "strokeColor": "#21262d",
                 },
                 smooth={"type": "dynamic"},
             )
@@ -204,9 +227,6 @@ def render_pyvis(graph,
         net.set_options(_PYVIS_OPTIONS)
         html_content = net.generate_html()
 
-        # ---- Цепочка height:100% от <body> до canvas.
-        #      Без этого #mynetwork {height:100%} разрешается в 0,
-        #      потому что родитель .card высоту не задаёт. ----
         # ---- Цепочка height:100% от <body> до canvas ----
         _PYVIS_INJECT = (
             "html,body{margin:0;padding:0;height:100%;overflow:hidden;"
@@ -231,9 +251,6 @@ def render_pyvis(graph,
             "!important;}"
 
             # === Навигационные кнопки vis-network ===
-            # На #21262d белые иконки с тенью читаются идеально.
-            # opacity чуть выше, чем было на #0b0d11, чтобы компенсировать
-            # меньший контраст фона.
             ".vis-network .vis-navigation{"
             "background:transparent!important;}"
             ".vis-network .vis-navigation .vis-button{"
@@ -253,8 +270,7 @@ def render_pyvis(graph,
             ".vis-network .vis-close:hover{"
             "opacity:1!important;}"
 
-            # === Тултип при наведении — оставляем тёмным,
-            #     чтобы читался поверх светлого графа ===
+            # === Тултип при наведении ===
             "div.vis-tooltip{"
             "background-color:#161a20!important;"
             "border:1px solid #2a313d!important;"
@@ -273,7 +289,7 @@ def render_pyvis(graph,
 
         escaped = _esc(html_content)   # html.escape(quote=True) → srcdoc-safe
 
-        # ---- Обёртка: та же логика размеров, что была у SVG ----
+        # ---- Обёртка ----
         wrapper_style = (
             f"width:100%;"
             f"aspect-ratio:{height_ratio};"
@@ -292,6 +308,8 @@ def render_pyvis(graph,
 
         return (
             f'<div class="pyvis-wrap" style="{wrapper_style}">'
+            '<button class="graph-fs-btn" title="Развернуть на весь экран" '
+            'onclick="window.toggleGraphFullscreen(this)">⛶</button>'
             f'<iframe srcdoc="{escaped}" style="{iframe_style}" '
             'sandbox="allow-scripts allow-same-origin allow-popups">'
             '</iframe></div>'

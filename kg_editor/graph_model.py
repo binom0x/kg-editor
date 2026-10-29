@@ -5,16 +5,53 @@
     edge(Source, Target, Predicate).
     attribute(Entity, Name, Value).
 
-ВАЖНО: идентификаторы по возможности пишутся БЕЗ кавычек (apple), чтобы
-совпадать с пользовательскими запросами node(apple, X). Кавычки добавляются
-только если атом не проходит _VALID_ATOM (кириллица, дефисы, цифры в начале
-и т.п.). Значения атрибутов всегда берутся в кавычки (это строки).
+Идентификаторы по возможности пишутся БЕЗ кавычек (apple). Кавычки — только
+если атом не проходит _VALID_ATOM. Значения атрибутов всегда в кавычках.
+
+v5.11: NLP-фильтрация перенесена в noise.is_service_word (POS-based).
+`_GENERIC_ADJ_BLACKLIST` удалён. `KnowledgeGraph` остаётся чистой моделью
+данных: фильтрация происходит в слое NLP (`TextToProlog`) до вызова
+`add_node`/`add_edge`/`add_attribute`. Если пользователь хочет защиту на
+уровне модели, он передаёт `KnowledgeGraph(generic_filter=…, lang='ru')`.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
+
+
+# ---------------------------------------------------------------- NLP-хелпер
+try:
+    from .noise import is_service_word as _is_service_word
+except ImportError:
+    try:
+        from noise import is_service_word as _is_service_word
+    except ImportError:
+        _is_service_word = None  # type: ignore
+
+
+def _default_generic_filter(w: str) -> bool:
+    """True, если w — служебное слово и не может быть узлом."""
+    if not w:
+        return True
+    if _is_service_word is None:
+        return False
+
+    # Compound-ID (российская_федерация, northern_ireland, …) — это
+    # многокомпонентные имена собственные. is_service_word() умеет
+    # смотреть только одиночные токены и на compound'ах ошибочно
+    # цепляется за первый ADJF-компонент. Не фильтруем их здесь.
+    if '_' in w:
+        return False
+
+    for lang in ('ru', 'en'):
+        try:
+            if _is_service_word(w, lang):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 @dataclass
@@ -39,10 +76,19 @@ class Attribute:
 
 
 class KnowledgeGraph:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        generic_filter: Optional[Callable[[str], bool]] = None,
+    ) -> None:
         self.nodes: Dict[str, Node] = {}
         self.edges: List[Edge] = []
         self.attributes: List[Attribute] = []
+        # Если generic_filter не задан — используем POS-based noise.
+        # Передайте `lambda w: False`, чтобы полностью отключить фильтрацию.
+        self._generic_filter: Callable[[str], bool] = (
+            generic_filter if generic_filter is not None
+            else _default_generic_filter
+        )
 
     # ------------------------------------------------------------------
     # CRUD
@@ -52,6 +98,11 @@ class KnowledgeGraph:
         node_id = (node_id or "").strip()
         if not node_id:
             raise ValueError("id узла пустой")
+        if self._generic_filter(node_id):
+            raise ValueError(
+                f"«{node_id}» — служебное слово (прилагательное, "
+                f"местоимение, предлог и т.п.), не может быть узлом графа"
+            )
         node_type = (node_type or "concept").strip() or "concept"
         if node_id in self.nodes:
             self.nodes[node_id].type = node_type
@@ -76,6 +127,12 @@ class KnowledgeGraph:
         predicate = (predicate or "").strip()
         if not (source and target and predicate):
             raise ValueError("source/target/predicate не могут быть пустыми")
+        if self._generic_filter(source):
+            raise ValueError(
+                f"«{source}» — служебное слово, не может быть source ребра")
+        if self._generic_filter(target):
+            raise ValueError(
+                f"«{target}» — служебное слово, не может быть target ребра")
         if source not in self.nodes:
             self.add_node(source)
         if target not in self.nodes:
@@ -96,6 +153,9 @@ class KnowledgeGraph:
         value = (value or "").strip()
         if not (entity and name):
             raise ValueError("entity/name не могут быть пустыми")
+        if self._generic_filter(entity):
+            raise ValueError(
+                f"«{entity}» — служебное слово, не может быть entity атрибута")
         if entity not in self.nodes:
             self.add_node(entity)
         a = Attribute(entity, name, value)
@@ -112,17 +172,22 @@ class KnowledgeGraph:
     # Сериализация
     # ------------------------------------------------------------------
     def to_prolog(self) -> str:
-        """Генерирует Prolog-исходник. Атомы без кавычек — где это возможно."""
         lines: List[str] = []
         for n in self.nodes.values():
+            if self._generic_filter(n.id):
+                continue
             props = _props_to_prolog(n.props)
             lines.append(f"node({_atom(n.id)}, {props}, {_atom(n.type)}).")
         for e in self.edges:
+            if self._generic_filter(e.source) or self._generic_filter(e.target):
+                continue
             lines.append(
                 f"edge({_atom(e.source)}, {_atom(e.target)}, "
                 f"{_atom(e.predicate)})."
             )
         for a in self.attributes:
+            if self._generic_filter(a.entity):
+                continue
             lines.append(
                 f"attribute({_atom(a.entity)}, {_atom(a.name)}, "
                 f"{_quote(a.value)})."
@@ -130,8 +195,10 @@ class KnowledgeGraph:
         return "\n".join(lines) + ("\n" if lines else "")
 
     @classmethod
-    def from_prolog(cls, text: str) -> "KnowledgeGraph":
-        g = cls()
+    def from_prolog(cls, text: str,
+                    generic_filter: Optional[Callable[[str], bool]] = None,
+                    ) -> "KnowledgeGraph":
+        g = cls(generic_filter=generic_filter)
         for clause in _split_clauses(text or ""):
             _apply_clause(g, clause)
         return g
@@ -145,11 +212,9 @@ class KnowledgeGraph:
 
 
 # ======================================================================
-# Вспомогательные функции сериализации/парсинга
+# Вспомогательные функции
 # ======================================================================
 _VALID_ATOM = re.compile(r"^[a-z][A-Za-z0-9_]*$")
-# Атомы, которые в PyAgentProlog'е на верхнем уровне ведут себя как операторы.
-# Внутри аргументов терма они безопасны, но лучше подстраховаться.
 _RESERVED_ATOMS = {"is", "mod", "div", "rem", "xor", "not"}
 
 
@@ -183,7 +248,6 @@ def _split_clauses(text: str) -> List[str]:
     while i < len(text):
         ch = text[i]
         nxt = text[i + 1] if i + 1 < len(text) else ""
-
         if in_block:
             if ch == "*" and nxt == "/":
                 in_block = False
@@ -191,7 +255,6 @@ def _split_clauses(text: str) -> List[str]:
                 continue
             i += 1
             continue
-
         if not in_str:
             if ch == "%":
                 while i < len(text) and text[i] != "\n":
@@ -281,9 +344,7 @@ def _str_arg(token: str) -> str:
     if len(t) >= 2 and t[0] == "'" and t[-1] == "'":
         inner = t[1:-1]
         return inner.replace("\\'", "'").replace("\\\\", "\\")
-    if t == "_":
-        return ""
-    if t == "[]":
+    if t in ("_", "[]"):
         return ""
     return t
 
@@ -319,12 +380,11 @@ def _apply_clause(g: KnowledgeGraph, clause: str) -> None:
     inner = m.group(2).strip()
     raw_args = _split_top(inner, ",") if inner else []
     args = [_str_arg(x) for x in raw_args]
-
     try:
         if functor == "node":
             if len(args) == 3:
-                nid, _, ntype = args
-                g.add_node(nid, ntype or "concept", _parse_props(raw_args[1]))
+                g.add_node(args[0], args[2] or "concept",
+                           _parse_props(raw_args[1]))
             elif len(args) == 2:
                 g.add_node(args[0], args[1] or "concept")
             elif len(args) == 1:
