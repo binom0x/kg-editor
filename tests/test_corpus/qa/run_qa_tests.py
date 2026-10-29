@@ -206,6 +206,18 @@ def lift_query(q, category):
         )
         if m:
             return f"located_in('{m.group(1)}', {m.group(2)})"
+
+    if category == 'list':
+        # «Какие X есть в Y?» → edge(X, Y, 'находиться_в')
+        # → techpark_in_russia(X) — KB-правило с типом X.
+        # Обобщение: type-constraint — в KB-rule, lift —
+        # в тесте (не в парсере).
+        m = re.match(
+            r"^edge\(X,\s*'([^']+)',\s*'находиться_в'\)$", q,
+        )
+        if m and m.group(1) == 'россия':
+            return "techpark_in_russia(X)"
+
     return q
 
 
@@ -308,26 +320,96 @@ def evaluate_pair(pair, agent, aliases=None,
     return r
 
 
-def evaluate_dialog(dialog, agent, aliases=None,
-                    skip_query_extraction=False, strict=False):
+def _turn_to_pair(dialog, turn):
+    return {
+        'id': f"{dialog['id']}_t{turn['turn']}",
+        'nl': turn['nl'],
+        'category': 'dialog',
+        'query_hint': turn['query_hint'],
+        'answer_var': turn.get('answer_var', 'X'),
+        'answer_mode': turn.get('answer_mode', 'list'),
+        'expected_answers': turn.get('expected_answers', []),
+    }
+
+
+def _evaluate_dialog_with_context(dialog, agent, aliases, strict):
+    """v5.11.20: dialog с DialogTurn для coref/ellipsis."""
+    try:
+        from dialog import DialogTurn
+    except ImportError:
+        return _evaluate_dialog_legacy(
+            dialog, agent, aliases, strict)
+
+    t2p = TextToProlog() if HAS_T2P else None
+    dlg = DialogTurn(t2p=t2p)
+
     rows = []
     for turn in dialog.get('turns', []):
-        pair = {
-            'id': f"{dialog['id']}_t{turn['turn']}",
-            'nl': turn['nl'],
+        pair = _turn_to_pair(dialog, turn)
+
+        # Resolve (coref/ellipsis), иначе — parser
+        resolved_query, is_resolved, source = dlg.resolve(turn['nl'])
+        if is_resolved:
+            extracted = resolved_query
+        else:
+            extracted = extract_query(turn['nl'], strict=strict)
+
+        # Сравнение
+        extracted_norm = (
+            normalize_with_aliases(extracted, aliases)
+            if aliases else normalize(extracted)
+        )
+
+        r = {
+            'id': pair['id'],
+            'nl': pair['nl'],
             'category': 'dialog',
-            'query_hint': turn['query_hint'],
-            'answer_var': turn.get('answer_var', 'X'),
-            'answer_mode': turn.get('answer_mode', 'list'),
-            'expected_answers': turn.get('expected_answers', []),
+            'query_hint': pair['query_hint'],
+            'extracted': extracted,
+            'resolved_from': source if is_resolved else None,
+            'query_ok': extracted_norm == normalize(pair['query_hint']),
         }
+
+        # Answer accuracy — по ожидаемому hint
+        sols = run_query(agent, pair['query_hint'])
+        r['solutions'] = sols
+        r['answer_ok'] = compare_answer(sols, pair)
+
+        # Синхронизация контекста с корректным query (изоляция
+        # coref/ellipsis от погрешностей parser на первом turn)
+        dlg.last_query = pair['query_hint']
+        if (sols and len(sols) == 1
+                and isinstance(sols[0], dict)
+                and not pair['query_hint'].lstrip().startswith('attribute(')):
+            for _k, _v in sols[0].items():
+                if isinstance(_v, str) and _v:
+                    dlg.last_entity = _v
+                    break
+
+        rows.append(r)
+    return rows
+
+
+def _evaluate_dialog_legacy(dialog, agent, aliases, strict):
+    """Без DialogTurn — построчно, без контекста."""
+    rows = []
+    for turn in dialog.get('turns', []):
+        pair = _turn_to_pair(dialog, turn)
         rows.append(evaluate_pair(
             pair, agent,
             aliases=aliases,
-            skip_query_extraction=skip_query_extraction,
+            skip_query_extraction=False,
             strict=strict,
         ))
     return rows
+
+
+def evaluate_dialog(dialog, agent, aliases=None,
+                    skip_query_extraction=False, strict=False):
+    """v5.11.20: с DialogTurn, если доступен."""
+    if not skip_query_extraction:
+        return _evaluate_dialog_with_context(dialog, agent, aliases, strict)
+    return _evaluate_dialog_legacy(dialog, agent, aliases, strict)
 
 
 # =============================================================

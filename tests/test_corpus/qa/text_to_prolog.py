@@ -5,7 +5,13 @@ text_to_prolog.py — Преобразование естественно-язы
 Режимы: "condition"|"graph"|"raw"|"definition"|"query".
 Высокоуровневый API: parse(text) -> (facts_str, query_str).
 
-RU (v5.11.19) с forward-loop.
+RU (v5.11.20) - forward-loop fallback in _subj_of (Natasha self-loop)
+    - strict propagation to extract_query
+    - grammar frame 'Какие X есть в Y?'
+    - dialog.py: coreference + ellipsis (4 dialog turns)
+    - FIO aliases + transitive/list lifting in run_qa_tests
+
+RU (v5.11.19) - forward-loop.
 
 RU (v5.11.17) — wh-handler: убран ранний return при role is None:
     * Раньше: `if role is None: result.append(term); continue` —
@@ -1471,6 +1477,24 @@ class TextToProlog:
             if entity and count_surface:
                 key = f"количество_{count_surface}"
                 return [Term('attr', [Term(entity), Term(key), X])]
+
+        # «Какие X есть в Y?» / «Какие X в Y?»
+        # → edge(X, Y, 'находиться_в')
+        # Грамматический фрейм; X — переменная «списка»,
+        # Y — место. Тип X (технопарк/город/...) не входит
+        # в синтаксис — это прерогатива KB-правила.
+        m = re.match(
+            r'^какие\s+[а-яё\-]+\s+(?:есть\s+)?(?:в|во|на)\s+(.+)$',
+            qlow,
+        )
+        if m:
+            place = self._phrase_to_atom(m.group(1))
+            if place and not self._is_noise_atom(place):
+                return [Term('triplet', [
+                    Term('находиться_в'),
+                    Variable('X'),
+                    Term(place),
+                ])]
 
         # «Когда <participle> X?» → attr(X, 'год_<verbal_noun_gen>', _)
         m = re.match(r'^когда\s+([а-яё\-]+)\s+(.+)$', qlow)

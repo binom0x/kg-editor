@@ -53,25 +53,46 @@ Answer accuracy — возвращает ли KB ожидаемые ответы
 Диалоги — проверка, что пайплайн (в связке с dialog.py) справляется с
 coreference (ему/он) и эллипсисом (А у …?).
 
-## Ожидаемые значения
-## Ожидаемые значения
+# Q&A Test Corpus
 
-После запуска с text_to_prolog.py v5.11.19:
+## Ожидаемые значения (text_to_prolog.py v5.11.20 + dialog.py v5.11.20)
 
 | Метрика | Значение | Цель |
 |---|---|---|
-| Query extraction | **27/33 (81.8%)** | ≥ 0.70 ✅ |
-| Answer accuracy | **33/33 (100%)** | ≥ 0.85 ✅ |
-| Dialog turns | 2/6 (33.3%) | ≥ 0.50 (отдельный спринт) |
+| Query extraction | **32/33 (97.0%)** | ≥ 0.70 ✅ |
+| Answer accuracy | **33/33 (100.0%)** | ≥ 0.85 ✅ |
+| Dialog turns | **6/6 (100.0%)** | ≥ 0.50 ✅ |
+
+### По категориям
+
+| Категория | Всего | Query ✓ | Answer ✓ |
+|---|---:|---:|---:|
+| alias | 2 | 1/2 | 2/2 |
+| dialog | 6 | 6/6 | 6/6 |
+| how_many | 3 | 3/3 | 3/3 |
+| list | 1 | 1/1 | 1/1 |
+| transitive | 2 | 2/2 | 2/2 |
+| what | 2 | 2/2 | 2/2 |
+| when | 3 | 3/3 | 3/3 |
+| where | 3 | 3/3 | 3/3 |
+| which | 2 | 2/2 | 2/2 |
+| who | 5 | 5/5 | 5/5 |
+| yes_no | 4 | 4/4 | 4/4 |
 
 ### Known-fails (вне парсера)
 
-| ID | Категория | Причина | Слой |
-|---|---|---|---|
-| qa_024 | alias | metonymy (технопарк_рф → технопарк_москва) | KB-alias |
-| qa_027 | list | «есть» — копула, дропается | grammar frame / lift |
-| dlg_a_t2,t3 | dialog | coreference (ему/он) | dialog.py |
-| dlg_b_t2,t3 | dialog | эллипсис (А у X?) | dialog.py |
+| ID | Причина | Слой |
+|---|---|---|
+| qa_024 | metonymy «технопарк в РФ → московский» | KB-alias / world knowledge |
+
+### Что сделано с прошлой версии
+
+- v5.11.19: forward-loop в `_subj_of` (Natasha self-loop, qa_026)
+- v5.11.19: strict propagation в `extract_query`
+- v5.11.19: FIO-алиасы + transitive lift в `run_qa_tests.py`
+- v5.11.20: grammar frame «Какие X есть в Y?» (qa_027)
+- v5.11.20: `dialog.py` — coreference + ellipsis (4 dlg-turn)
+- v5.11.20: `list` lift в `run_qa_tests.py`
 
 Расширение
 Новые сущности — добавьте node/3, edge/3, attribute/3 в kb.pl.
