@@ -8,11 +8,9 @@
 Идентификаторы по возможности пишутся БЕЗ кавычек (apple). Кавычки — только
 если атом не проходит _VALID_ATOM. Значения атрибутов всегда в кавычках.
 
-v5.11: NLP-фильтрация перенесена в noise.is_service_word (POS-based).
-`_GENERIC_ADJ_BLACKLIST` удалён. `KnowledgeGraph` остаётся чистой моделью
-данных: фильтрация происходит в слое NLP (`TextToProlog`) до вызова
-`add_node`/`add_edge`/`add_attribute`. Если пользователь хочет защиту на
-уровне модели, он передаёт `KnowledgeGraph(generic_filter=…, lang='ru')`.
+v5.12: fallback на nl2prolog.noise — если пакет установлен, но локального
+noise.py нет. Если ничего не установлено — фильтрация отключается,
+редактор продолжает работать.
 """
 from __future__ import annotations
 
@@ -22,13 +20,17 @@ from typing import Callable, Dict, List, Optional
 
 
 # ---------------------------------------------------------------- NLP-хелпер
+# Приоритет: локальный noise.py → пакет nl2prolog → отключение фильтра.
 try:
     from .noise import is_service_word as _is_service_word
 except ImportError:
     try:
         from noise import is_service_word as _is_service_word
     except ImportError:
-        _is_service_word = None  # type: ignore
+        try:
+            from nl2prolog.noise import is_service_word as _is_service_word
+        except ImportError:
+            _is_service_word = None  # type: ignore
 
 
 def _default_generic_filter(w: str) -> bool:

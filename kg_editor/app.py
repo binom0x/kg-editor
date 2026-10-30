@@ -23,13 +23,18 @@
 живут только в рамках одного запроса и не влияют на модель графа.
 
 Редактор: цветные HTML-таблицы + полноценная подсветка Prolog-исходника.
-NL-импорт: встроенный text_to_prolog.py или любой пользовательский .py
-с классом TextToProlog. Поддерживается загрузка файлов (txt, pdf, docx, fb2)
-с модальным окном для просмотра и редактирования полного текста.
+NL-импорт: опциональный. Пакет `nl2prolog` — экстрактор по умолчанию,
+но НЕ обязательная зависимость. Без него пользователь может загрузить
+собственный .py-модуль с классом TextToProlog. Ядро редактора
+(граф, CRUD, Prolog-импорт/экспорт, запросы, PyVis) работает независимо.
 
-v5.11.14 (app):
-    * FIX: Безопасное редактирование ID узла (без потери данных при ошибке валидации).
-    * FIX: Перехват ошибок валидации при редактировании/добавлении рёбер.
+v5.12:
+    * FIX: безопасный импорт dialog.py — редактор стартует без nl2prolog.
+    * FIX: баннер о состоянии экстрактора (nl2prolog / пользовательский).
+    * FIX: при отсутствии экстрактора аккордеон «Пользовательский конвертер»
+      открыт по умолчанию.
+    * FIX: информативные сообщения в хендлерах импорта НЛ, если экстрактор
+      не задан — с указанием, как загрузить свой или установить nl2prolog.
 """
 from __future__ import annotations
 
@@ -79,7 +84,7 @@ except Exception as _e:  # noqa: BLE001
     _AGENT_ERR = str(_e)
 
 # ---------------------------------------------------------------------
-# NL-импорт (опционально)
+# NL-импорт (опционально) — shim на nl2prolog или локальный
 # ---------------------------------------------------------------------
 try:
     try:
@@ -91,10 +96,31 @@ except Exception:
     TextToProlog = None  # type: ignore
     _T2P_OK = False
 
+# ---------------------------------------------------------------------
+# Пакет nl2prolog — отдельная проверка для диагностики
+# ---------------------------------------------------------------------
 try:
-    from .dialog import DialogTurn, apply_facts_to_graph
+    import nl2prolog as _nl2prolog_module  # noqa: F401
+    _NL2PROLOG_OK = True
+    _NL2PROLOG_VERSION = getattr(_nl2prolog_module, "__version__", "?")
 except ImportError:
-    from dialog import DialogTurn, apply_facts_to_graph
+    _NL2PROLOG_OK = False
+    _NL2PROLOG_VERSION = None
+
+# ---------------------------------------------------------------------
+# Dialog — опционален, не используется в UI (заглушки), но импорт
+# должен быть безопасным, чтобы kg-editor стартовал без nl2prolog.
+# ---------------------------------------------------------------------
+try:
+    try:
+        from .dialog import DialogTurn, apply_facts_to_graph
+    except ImportError:
+        from dialog import DialogTurn, apply_facts_to_graph
+    _DIALOG_OK = True
+except Exception:
+    DialogTurn = None  # type: ignore
+    apply_facts_to_graph = None  # type: ignore
+    _DIALOG_OK = False
 
 # =====================================================================
 # Константы
@@ -271,15 +297,62 @@ button.compact-btn:hover, .compact-btn button:hover {
     border-color: #3a4250 !important;
 }
 
-.compact-tb input, .compact-tb textarea {
-    padding: 3px 7px !important;
+/* =====================================================================
+   v5.12.1 — единая рамка у полей ввода (.compact-tb)
+
+   Gradio оборачивает <input>/<textarea> в .block/.form, у которых
+   тоже есть border от темы (block_border_color). Внутри input сам
+   имеет border → визуально два контура. Снимаем border/background/
+   shadow с обёртки, оставляем только на самом поле ввода.
+   ===================================================================== */
+
+/* Снять рамку/фон/тень с обёртки (block, form, wrap) */
+.gradio-container .compact-tb,
+.gradio-container .compact-tb.block,
+.gradio-container .compact-tb .form,
+.gradio-container .compact-tb .wrap {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+
+/* Само поле ввода — единственный видимый контур */
+.gradio-container .compact-tb input,
+.gradio-container .compact-tb textarea {
+    padding: 4px 8px !important;
     font-size: 12px !important;
-    min-height: 26px !important;
+    min-height: 28px !important;
     background: #0b0d11 !important;
     color: #c7cbd1 !important;
     border: 1px solid #2a313d !important;
+    border-radius: 4px !important;
+    outline: none !important;
+    box-sizing: border-box !important;
+    width: 100% !important;
 }
-.compact-tb input:focus, .compact-tb textarea:focus {
+.gradio-container .compact-tb input:focus,
+.gradio-container .compact-tb textarea:focus {
+    border-color: #58a6ff !important;
+    box-shadow: 0 0 0 2px rgba(88,166,255,.2) !important;
+    outline: none !important;
+}
+
+/* Модальное окно редактирования текста — тот же принцип */
+.gradio-container .modal-textarea,
+.gradio-container .modal-textarea.block,
+.gradio-container .modal-textarea .form {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+}
+.gradio-container .modal-textarea textarea {
+    border: 1px solid #2a313d !important;
+    border-radius: 4px !important;
+    background: #0b0d11 !important;
+    color: #c7cbd1 !important;
+}
+.gradio-container .modal-textarea textarea:focus {
     border-color: #58a6ff !important;
     box-shadow: 0 0 0 2px rgba(88,166,255,.2) !important;
 }
@@ -323,6 +396,21 @@ button.compact-btn:hover, .compact-btn button:hover {
 .cm-editor .cm-selectionBackground,
 .cm-editor .cm-content ::selection { background: #2a313d !important; }
 .cm-editor .cm-cursor { border-left-color: #79c0ff !important; }
+
+/* Единая рамка для Code-редакторов */
+.gradio-container .block:has(.cm-editor) {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+}
+.gradio-container .cm-editor {
+    border: 1px solid #2a313d !important;
+    border-radius: 4px !important;
+}
+.gradio-container .cm-editor.cm-focused {
+    border-color: #58a6ff !important;
+    box-shadow: 0 0 0 2px rgba(88,166,255,.2) !important;
+}
 
 .gradio-container table { background: #0b0d11 !important; }
 .gradio-container th {
@@ -529,6 +617,69 @@ def _status_html(s: str) -> str:
     return f'<pre class="status-box">{_esc(str(s))}</pre>'
 
 
+def _nl_package_status_html(t2p_custom: bool = False) -> str:
+    """Баннер о состоянии экстрактора по умолчанию.
+
+    t2p_custom=True — пользователь загрузил свой .py через UI.
+    Иначе определяется автоматически по флагам _T2P_OK и _NL2PROLOG_OK.
+    """
+    base = (
+        "padding:8px 10px;border-radius:4px;font-size:11px;"
+        "font-family:ui-sans-serif,system-ui,sans-serif;"
+        "line-height:1.55;"
+    )
+    if t2p_custom:
+        return (
+            f'<div style="{base}background:#0d1117;'
+            f'border:1px solid #238636;color:#7ee787;">'
+            f'✅ <b>Пользовательский экстрактор</b> подключён.<br>'
+            f'NL-импорт работает через ваш .py-модуль.'
+            f'</div>'
+        )
+    if _T2P_OK and _NL2PROLOG_OK:
+        return (
+            f'<div style="{base}background:#0d1117;'
+            f'border:1px solid #238636;color:#7ee787;">'
+            f'✅ <b>nl2prolog {_esc(_NL2PROLOG_VERSION)}</b> — '
+            f'экстрактор по умолчанию.<br>'
+            f'NL-импорт работает из коробки.'
+            f'</div>'
+        )
+    if _NL2PROLOG_OK and not _T2P_OK:
+        return (
+            f'<div style="{base}background:#161a20;'
+            f'border:1px solid #f0883e;color:#f0883e;">'
+            f'⚠️ <b>nl2prolog {_esc(_NL2PROLOG_VERSION)}</b> установлен, '
+            f'но shim <code>text_to_prolog</code> не загружается.<br>'
+            f'Проверьте установку пакета, либо загрузите свой '
+            f'.py-экстрактор в разделе «⚙️ Пользовательский конвертер» ниже.'
+            f'</div>'
+        )
+    if _T2P_OK and not _NL2PROLOG_OK:
+        # Локальный text_to_prolog.py без пакета — маловероятно, но возможно
+        return (
+            f'<div style="{base}background:#0d1117;'
+            f'border:1px solid #238636;color:#7ee787;">'
+            f'✅ <b>Встроенный text_to_prolog</b> загружен '
+            f'(пакет nl2prolog не обнаружен).<br>'
+            f'NL-импорт работает через локальный модуль.'
+            f'</div>'
+        )
+    return (
+        f'<div style="{base}background:#161a20;'
+        f'border:1px solid #f0883e;color:#f0883e;">'
+        f'ℹ️ <b>Экстрактор NL не задан.</b><br>'
+        f'Редактор графа работает полностью — можно открывать/сохранять '
+        f'<code>.pl</code>, редактировать узлы/рёбра/атрибуты, '
+        f'импортировать Prolog-код, строить запросы.<br>'
+        f'NL-импорт (📥 Извлечь факты / запросы) недоступен.<br>'
+        f'→ <b>Загрузите свой <code>.py</code>-экстрактор</b> в разделе '
+        f'«⚙️ Пользовательский конвертер» ниже.<br>'
+        f'→ <b>Или установите:</b> <code>pip install "nl2prolog[ru]"</code>'
+        f'</div>'
+    )
+
+
 def _safe(g) -> KnowledgeGraph:
     return g if isinstance(g, KnowledgeGraph) else KnowledgeGraph()
 
@@ -575,12 +726,15 @@ def _nodes_data(g: KnowledgeGraph) -> List[List[str]]:
             deg[e.source] += 1
         if e.target in deg:
             deg[e.target] += 1
-    
+
     rows = []
     for n in g.nodes.values():
         color = _node_type_color(n.type)
-        # Создаём HTML-чип для типа
-        type_html = f'<span style="background-color:{color}22; color:{color}; padding:2px 6px; border-radius:4px; border:1px solid {color}66;">{n.type}</span>'
+        type_html = (
+            f'<span style="background-color:{color}22; color:{color}; '
+            f'padding:2px 6px; border-radius:4px; '
+            f'border:1px solid {color}66;">{n.type}</span>'
+        )
         rows.append([n.id, type_html, str(deg[n.id])])
     return rows
 
@@ -588,13 +742,26 @@ def _nodes_data(g: KnowledgeGraph) -> List[List[str]]:
 def _edges_data(g: KnowledgeGraph) -> List[List[str]]:
     rows = []
     for i, e in enumerate(g.edges):
-        src_color = _node_type_color(g.nodes[e.source].type) if e.source in g.nodes else "#8b949e"
-        tgt_color = _node_type_color(g.nodes[e.target].type) if e.target in g.nodes else "#8b949e"
-        
-        src_html = f'<span style="background-color:{src_color}22; color:{src_color}; padding:2px 6px; border-radius:4px; border:1px solid {src_color}66;">{e.source}</span>'
-        tgt_html = f'<span style="background-color:{tgt_color}22; color:{tgt_color}; padding:2px 6px; border-radius:4px; border:1px solid {tgt_color}66;">{e.target}</span>'
-        pred_html = f'<span style="color:#ff7b72; font-family:monospace;">─[{e.predicate}]→</span>'
-        
+        src_color = (_node_type_color(g.nodes[e.source].type)
+                     if e.source in g.nodes else "#8b949e")
+        tgt_color = (_node_type_color(g.nodes[e.target].type)
+                     if e.target in g.nodes else "#8b949e")
+
+        src_html = (
+            f'<span style="background-color:{src_color}22; color:{src_color}; '
+            f'padding:2px 6px; border-radius:4px; '
+            f'border:1px solid {src_color}66;">{e.source}</span>'
+        )
+        tgt_html = (
+            f'<span style="background-color:{tgt_color}22; color:{tgt_color}; '
+            f'padding:2px 6px; border-radius:4px; '
+            f'border:1px solid {tgt_color}66;">{e.target}</span>'
+        )
+        pred_html = (
+            f'<span style="color:#ff7b72; font-family:monospace;">'
+            f'─[{e.predicate}]→</span>'
+        )
+
         rows.append([str(i), src_html, pred_html, tgt_html])
     return rows
 
@@ -659,8 +826,8 @@ def _attrs_html(g: KnowledgeGraph) -> str:
         rows.append(
             "<tr>"
             f'<td style="padding:4px 10px;border-bottom:1px solid #161a20;'
-            f'color:#6e7681;text-align:right;font-family:ui-monospace,monospace;'
-            f'width:32px;">{i}</td>'
+            f'color:#6e7681;text-align:right;'
+            f'font-family:ui-monospace,monospace;width:32px;">{i}</td>'
             f'<td style="padding:4px 10px;border-bottom:1px solid #161a20;">'
             f'{_chip(a.entity, color, mono=True)}</td>'
             f'<td style="padding:4px 10px;border-bottom:1px solid #161a20;'
@@ -882,7 +1049,10 @@ def extract_text_from_file(file_path: str) -> Optional[str]:
                 import PyPDF2
                 with open(file_path, 'rb') as f:
                     reader = PyPDF2.PdfReader(f)
-                    return '\n'.join([page.extract_text() for page in reader.pages if page.extract_text()])
+                    return '\n'.join([
+                        page.extract_text() for page in reader.pages
+                        if page.extract_text()
+                    ])
             except ImportError:
                 return "❌ Для чтения PDF установите: pip install PyPDF2"
         elif ext == '.docx':
@@ -900,16 +1070,22 @@ def extract_text_from_file(file_path: str) -> Optional[str]:
 
 def h_load_text_file(file):
     if file is None:
-        return "", _status_html("Файл не выбран"), gr.update(visible=False), gr.update(visible=False)
+        return ("", _status_html("Файл не выбран"),
+                gr.update(visible=False), gr.update(visible=False))
     path = file.name if hasattr(file, "name") else str(file)
     text = extract_text_from_file(path)
     if not text:
-        return "", _status_html(f"❌ Не удалось прочитать файл: {path}"), gr.update(visible=False), gr.update(visible=False)
+        return ("", _status_html(f"❌ Не удалось прочитать файл: {path}"),
+                gr.update(visible=False), gr.update(visible=False))
     if text.startswith("❌"):
-        return "", _status_html(text), gr.update(visible=False), gr.update(visible=False)
+        return ("", _status_html(text),
+                gr.update(visible=False), gr.update(visible=False))
     return (
         text,
-        _status_html(f"✅ Файл загружен ({len(text)} символов). Нажмите «📝 Открыть текст», чтобы просмотреть и отредактировать."),
+        _status_html(
+            f"✅ Файл загружен ({len(text)} символов). "
+            f"Нажмите «📝 Открыть текст», чтобы просмотреть и отредактировать."
+        ),
         gr.update(visible=True),
         gr.update(visible=False)
     )
@@ -922,11 +1098,13 @@ def h_open_modal(state_text):
 
 
 def h_apply_modal(modal_text_val):
-    return gr.update(visible=False), modal_text_val, _status_html("✅ Текст обновлён.")
+    return (gr.update(visible=False), modal_text_val,
+            _status_html("✅ Текст обновлён."))
 
 
 def h_clear_nl():
-    return "", "", _status_html("Очищено."), gr.update(visible=False), gr.update(visible=False)
+    return ("", "", _status_html("Очищено."),
+            gr.update(visible=False), gr.update(visible=False))
 
 
 # =====================================================================
@@ -943,7 +1121,10 @@ def _h_pick_t2p() -> str:
 def h_load_t2p_module(path: str):
     path = (path or "").strip()
     if not path:
-        return None, _status_html("✗ Укажите путь к .py-файлу")
+        return None, _status_html(
+            "✗ Укажите путь к .py-файлу\n"
+            "Или установите встроенный: pip install \"nl2prolog[ru]\""
+        )
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         return None, _status_html(f"✗ Файл не найден: {path}")
@@ -958,30 +1139,39 @@ def h_load_t2p_module(path: str):
     try:
         spec = importlib.util.spec_from_file_location(unique_name, path)
         if spec is None or spec.loader is None:
-            return None, _status_html(f"✗ Не удалось создать загрузчик для: {path}")
+            return None, _status_html(
+                f"✗ Не удалось создать загрузчик для: {path}")
         module = importlib.util.module_from_spec(spec)
         _sys.modules[unique_name] = module
         spec.loader.exec_module(module)
     except Exception as e:
         _sys.modules.pop(unique_name, None)
-        return None, _status_html(f"✗ Ошибка импорта {path}:\n{e}\n\n{traceback.format_exc()}")
+        return None, _status_html(
+            f"✗ Ошибка импорта {path}:\n{e}\n\n{traceback.format_exc()}")
 
     if not hasattr(module, "TextToProlog"):
         _sys.modules.pop(unique_name, None)
-        return None, _status_html(f"✗ В модуле нет класса TextToProlog: {path}")
+        return None, _status_html(
+            f"✗ В модуле нет класса TextToProlog: {path}")
 
     cls = module.TextToProlog
     if not hasattr(cls, 'parse') and not hasattr(cls, 'convert'):
         _sys.modules.pop(unique_name, None)
-        return None, _status_html(f"✗ Класс TextToProlog не имеет ни parse(), ни convert(): {path}")
+        return None, _status_html(
+            f"✗ Класс TextToProlog не имеет ни parse(), ни convert(): {path}")
 
     try:
         cls()
     except Exception as e:
         _sys.modules.pop(unique_name, None)
-        return None, _status_html(f"✗ Класс TextToProlog не инициализируется без аргументов:\n{e}")
+        return None, _status_html(
+            f"✗ Класс TextToProlog не инициализируется без аргументов:\n{e}")
 
-    return cls, _status_html(f"✓ Загружен модуль: {path}\n  класс: TextToProlog\n  as sys.modules['{unique_name}']")
+    return cls, _status_html(
+        f"✓ Загружен модуль: {path}\n"
+        f"  класс: TextToProlog\n"
+        f"  as sys.modules['{unique_name}']"
+    )
 
 
 # =====================================================================
@@ -1012,39 +1202,39 @@ def h_edit_node(g, old_id, new_id, new_type):
         return (*_refresh(g), "✗ Кликните по строке в таблице")
     if old_id not in g.nodes:
         return (*_refresh(g), "✗ Узел не найден")
-    
+
     old_node = g.nodes[old_id]
     final_id = new_id.strip() if new_id and new_id.strip() else old_id
-    final_type = new_type.strip() if new_type and new_type.strip() else old_node.type
-    
+    final_type = new_type.strip() if new_type and new_type.strip() \
+        else old_node.type
+
     if final_id != old_id:
         if final_id in g.nodes:
             return (*_refresh(g), f"✗ Узел '{final_id}' уже существует")
-        
+
         props = old_node.props
-        # Безопасное создание: пробуем создать новый узел, чтобы проверить валидность ID
         try:
             g.add_node(final_id, final_type, props)
         except Exception as e:
             return (*_refresh(g), f"✗ Ошибка переименования: {e}")
-            
-        # Если создание прошло успешно, обновляем связи
+
         for e in g.edges:
-            if e.source == old_id: e.source = final_id
-            if e.target == old_id: e.target = final_id
-        
+            if e.source == old_id:
+                e.source = final_id
+            if e.target == old_id:
+                e.target = final_id
+
         for a in g.attributes:
-            if a.entity == old_id: a.entity = final_id
-            
-        # Теперь безопасно удаляем старый узел (его связи уже перенаправлены)
+            if a.entity == old_id:
+                a.entity = final_id
+
         g.remove_node(old_id)
     else:
-        # Просто меняем тип
         try:
             g.add_node(old_id, final_type)
         except Exception as e:
             return (*_refresh(g), f"✗ Ошибка: {e}")
-        
+
     return (*_refresh(g), f"✓ Узел обновлён: {final_id}")
 
 
@@ -1083,24 +1273,29 @@ def h_edit_edge(g, idx_str, new_src, new_tgt, new_pred):
         idx = int(idx_str)
         if not (0 <= idx < len(g.edges)):
             return (*_refresh(g), "✗ Ребро не найдено")
-        
+
         old_edge = g.edges[idx]
-        final_src = new_src.strip() if new_src and new_src.strip() else old_edge.source
-        final_tgt = new_tgt.strip() if new_tgt and new_tgt.strip() else old_edge.target
-        final_pred = new_pred.strip() if new_pred and new_pred.strip() else old_edge.predicate
-        
-        # Безопасное создание узлов, если их нет
+        final_src = new_src.strip() if new_src and new_src.strip() \
+            else old_edge.source
+        final_tgt = new_tgt.strip() if new_tgt and new_tgt.strip() \
+            else old_edge.target
+        final_pred = new_pred.strip() if new_pred and new_pred.strip() \
+            else old_edge.predicate
+
         try:
-            if final_src not in g.nodes: g.add_node(final_src)
-            if final_tgt not in g.nodes: g.add_node(final_tgt)
+            if final_src not in g.nodes:
+                g.add_node(final_src)
+            if final_tgt not in g.nodes:
+                g.add_node(final_tgt)
         except Exception as e:
             return (*_refresh(g), f"✗ Ошибка добавления узла: {e}")
-        
+
         old_edge.source = final_src
         old_edge.target = final_tgt
         old_edge.predicate = final_pred
-        
-        return (*_refresh(g), f"✓ Ребро обновлено: {final_src} -> {final_tgt}")
+
+        return (*_refresh(g),
+                f"✓ Ребро обновлено: {final_src} -> {final_tgt}")
     except Exception as e:
         return (*_refresh(g), f"✗ {e}")
 
@@ -1141,45 +1336,72 @@ def h_del_attr(g, idx_str):
 # =====================================================================
 # Handlers — импорт
 # =====================================================================
-def h_import_full_graph(g, short_text, full_text, t2p_cls=None, log_filtered=False):
+def _extractor_hint_html() -> str:
+    """Подсказка для хендлеров импорта, когда экстрактор не задан."""
+    return (
+        "ℹ️ Экстрактор NL не задан.\n\n"
+        "Редактор графа работает полностью — можно открывать/сохранять .pl, "
+        "редактировать узлы/рёбра/атрибуты, импортировать Prolog-код, "
+        "строить запросы.\n\n"
+        "Для NL-импорта нужно:\n"
+        "  → Загрузить свой .py-модуль с классом TextToProlog\n"
+        "    в разделе «⚙️ Пользовательский конвертер»\n"
+        "    (метод parse() или convert())\n"
+        "  → Или установить встроенный:\n"
+        "    pip install \"nl2prolog[ru]\"\n"
+    )
+
+
+def h_import_full_graph(g, short_text, full_text, t2p_cls=None,
+                        log_filtered=False):
     g = _safe(g)
-    cls = t2p_cls if t2p_cls is not None else (TextToProlog if _T2P_OK else None)
+    cls = t2p_cls if t2p_cls is not None \
+        else (TextToProlog if _T2P_OK else None)
     if cls is None:
-        return _status_html("✗ text_to_prolog недоступен."), g, _filtered_html([])
+        return _status_html(_extractor_hint_html()), g, _filtered_html([])
     text = (full_text or "").strip() or (short_text or "").strip()
     if not text:
         return _status_html("✗ Пустой текст"), g, _filtered_html([])
-    
+
     try:
         t2p = cls()
         kwargs = {'strict': True, 'facts_from_questions': True}
-        if log_filtered: kwargs['log_filtered'] = True
-        
+        if log_filtered:
+            kwargs['log_filtered'] = True
+
         try:
             facts_src, _ = t2p.parse(text, **kwargs)
         except TypeError:
             kwargs.pop('facts_from_questions', None)
             kwargs.pop('log_filtered', None)
             facts_src, _ = t2p.parse(text, **kwargs)
-            
-        filtered_items = list(getattr(t2p, 'filtered_atoms', []) or []) if log_filtered else []
-        
+
+        filtered_items = (
+            list(getattr(t2p, 'filtered_atoms', []) or [])
+            if log_filtered else []
+        )
+
         new_g = KnowledgeGraph.from_prolog(facts_src or "")
-        for n in new_g.nodes.values(): g.add_node(n.id, n.type, n.props)
-        for e in new_g.edges: g.add_edge(e.source, e.target, e.predicate)
-        for a in new_g.attributes: g.add_attribute(a.entity, a.name, a.value)
+        for n in new_g.nodes.values():
+            g.add_node(n.id, n.type, n.props)
+        for e in new_g.edges:
+            g.add_edge(e.source, e.target, e.predicate)
+        for a in new_g.attributes:
+            g.add_attribute(a.entity, a.name, a.value)
 
         msg = (f"✓ Факты: +{len(new_g.nodes)} узлов, "
-               f"+{len(new_g.edges)} рёбер, +{len(new_g.attributes)} атрибутов")
+               f"+{len(new_g.edges)} рёбер, "
+               f"+{len(new_g.attributes)} атрибутов")
         return _status_html(msg), g, _filtered_html(filtered_items)
     except Exception as e:
         return _status_html(f"✗ {e}"), g, _filtered_html([])
 
 
 def h_extract_query(short_text, full_text, t2p_cls=None):
-    cls = t2p_cls if t2p_cls is not None else (TextToProlog if _T2P_OK else None)
+    cls = t2p_cls if t2p_cls is not None \
+        else (TextToProlog if _T2P_OK else None)
     if cls is None:
-        return "", _status_html("✗ text_to_prolog недоступен.")
+        return "", _status_html(_extractor_hint_html())
     text = (full_text or "").strip() or (short_text or "").strip()
     if not text:
         return "", _status_html("✗ Пустой текст")
@@ -1187,13 +1409,15 @@ def h_extract_query(short_text, full_text, t2p_cls=None):
     try:
         t2p = cls()
         try:
-            _, query_src = t2p.parse(text, strict=True, facts_from_questions=False)
+            _, query_src = t2p.parse(
+                text, strict=True, facts_from_questions=False)
         except TypeError:
             _, query_src = t2p.parse(text, strict=True)
 
         if not query_src:
             return "", _status_html("ℹ️ Вопросов не найдено.")
-        return query_src, _status_html(f"✓ Извлечён запрос:\n{query_src[:100]}...")
+        return (query_src,
+                _status_html(f"✓ Извлечён запрос:\n{query_src[:100]}..."))
     except Exception as e:
         return "", _status_html(f"✗ {e}")
 
@@ -1221,9 +1445,11 @@ def h_open_file(g):
 def h_save_file(g, current_path):
     g = _safe(g)
     p = current_path or _pick_file(title="Сохранить как...", save=True)
-    if not p: return _status_html("✗ Не выбран файл"), current_path
+    if not p:
+        return _status_html("✗ Не выбран файл"), current_path
     try:
-        with open(p, "w", encoding="utf-8") as f: f.write(g.to_prolog())
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(g.to_prolog())
         return _status_html(f"✓ Сохранено: {p}"), p
     except Exception as e:
         return _status_html(f"✗ {e}"), current_path
@@ -1231,13 +1457,16 @@ def h_save_file(g, current_path):
 
 def h_new_project(g):
     p = _pick_folder(title="Папка нового проекта")
-    if not p: return _refresh(_safe(g)) + (_status_html("Отменено"),)
+    if not p:
+        return _refresh(_safe(g)) + (_status_html("Отменено"),)
     try:
         os.makedirs(p, exist_ok=True)
         kb = os.path.join(p, "graph.pl")
         if not os.path.isfile(kb):
-            with open(kb, "w", encoding="utf-8") as f: f.write("% Graph\n")
-        new_g = KnowledgeGraph.from_prolog(open(kb, encoding="utf-8").read())
+            with open(kb, "w", encoding="utf-8") as f:
+                f.write("% Graph\n")
+        new_g = KnowledgeGraph.from_prolog(
+            open(kb, encoding="utf-8").read())
         return _refresh(new_g) + (_status_html(f"✓ Проект: {p}"),)
     except Exception as e:
         return _refresh(_safe(g)) + (_status_html(f"✗ {e}"),)
@@ -1264,8 +1493,11 @@ def h_load_example(g):
 def h_query(g, text):
     g = _safe(g)
     text = (text or "").strip()
-    if not text: return {"result": None}, "✗ Пустой запрос"
-    if not _AGENT_OK: return {"error": "PyAgentProlog недоступен"}, "✗ Установите prolog"
+    if not text:
+        return {"result": None}, "✗ Пустой запрос"
+    if not _AGENT_OK:
+        return ({"error": "PyAgentProlog недоступен"},
+                "✗ Установите prolog")
 
     q = text if text.endswith(".") else text + "."
     try:
@@ -1277,23 +1509,49 @@ def h_query(g, text):
     sols, truncated = [], False
     try:
         for item in agent.stream(q):
-            if isinstance(item, dict) and 'error' in item: return {"error": item['error']}, f"✗ {item['error']}"
-            if item is False: return {"result": False}, "✗ Нет решений"
-            if item is True: return {"result": True}, "✓ true"
-            if isinstance(item, dict): sols.append(item)
-            if len(sols) >= _SOLUTION_LIMIT: truncated = True; break
+            if isinstance(item, dict) and 'error' in item:
+                return {"error": item['error']}, f"✗ {item['error']}"
+            if item is False:
+                return {"result": False}, "✗ Нет решений"
+            if item is True:
+                return {"result": True}, "✓ true"
+            if isinstance(item, dict):
+                sols.append(item)
+            if len(sols) >= _SOLUTION_LIMIT:
+                truncated = True
+                break
     except Exception as e:
         return {"error": str(e)}, f"✗ {e}"
 
-    if not sols: return {"result": None}, "Нет решений"
+    if not sols:
+        return {"result": None}, "Нет решений"
     return sols, f"✓ {len(sols)} решение(й)"
 
 
-def h_dialog_ask(g, text, dlg_state): return {"result": "Диалог отключен в этой версии"}, "✗ Функция в разработке", dlg_state
-def h_dialog_answer(g, text, dlg_state): return g, "✗ Функция в разработке", "", dlg_state, {}
-def h_dialog_yes(g, dlg_state): return g, "✗ Функция в разработке", "", dlg_state, {}
-def h_dialog_no(g, dlg_state): return g, "✗ Функция в разработке", "", dlg_state, {}
-def h_dialog_transcript(dlg_state): return "✗ Функция в разработке"
+# ---- Dialog (опционально, не подключён к UI) -------------------------
+def h_dialog_ask(g, text, dlg_state):
+    if not _DIALOG_OK:
+        return ({"result": None},
+                "⚠️ dialog.py недоступен (nl2prolog не установлен)",
+                dlg_state)
+    return ({"result": "Диалог отключен в этой версии"},
+            "✗ Функция в разработке", dlg_state)
+
+
+def h_dialog_answer(g, text, dlg_state):
+    return g, "✗ Функция в разработке", "", dlg_state, {}
+
+
+def h_dialog_yes(g, dlg_state):
+    return g, "✗ Функция в разработке", "", dlg_state, {}
+
+
+def h_dialog_no(g, dlg_state):
+    return g, "✗ Функция в разработке", "", dlg_state, {}
+
+
+def h_dialog_transcript(dlg_state):
+    return "✗ Функция в разработке"
 
 
 # =====================================================================
@@ -1302,14 +1560,18 @@ def h_dialog_transcript(dlg_state): return "✗ Функция в разрабо
 def build_ui() -> gr.Blocks:
     _blocks_kwargs = {"title": "KnowledgeGraph Editor"}
     if not _LAUNCH_THEME:
-        _blocks_kwargs.update(css=_GLOBAL_CSS, theme=_make_theme(), head=_DARK_FORCE_HEAD)
+        _blocks_kwargs.update(
+            css=_GLOBAL_CSS,
+            theme=_make_theme(),
+            head=_DARK_FORCE_HEAD,
+        )
 
     with gr.Blocks(**_blocks_kwargs) as ui:
         graph_state = gr.State(KnowledgeGraph())
         current_path = gr.State("")
         t2p_cls_state = gr.State(None)
         nl_text_state = gr.State("")
-        
+
         sel_node_id = gr.State("")
         sel_edge_idx = gr.State("")
 
@@ -1318,42 +1580,87 @@ def build_ui() -> gr.Blocks:
             with gr.Column(scale=2, min_width=300):
                 gr.HTML('<div class="col-head">📁 Граф / Проект</div>')
                 with gr.Row(equal_height=True):
-                    open_btn = gr.Button("📂 Открыть", size="sm", elem_classes=["compact-btn"])
-                    new_btn = gr.Button("🆕 Создать", size="sm", elem_classes=["compact-btn"])
-                    save_btn = gr.Button("💾 Сохранить", size="sm", elem_classes=["compact-btn"])
-                    example_btn = gr.Button("📚", size="sm", scale=0, elem_classes=["compact-btn"])
+                    open_btn = gr.Button(
+                        "📂 Открыть", size="sm",
+                        elem_classes=["compact-btn"])
+                    new_btn = gr.Button(
+                        "🆕 Создать", size="sm",
+                        elem_classes=["compact-btn"])
+                    save_btn = gr.Button(
+                        "💾 Сохранить", size="sm",
+                        elem_classes=["compact-btn"])
+                    example_btn = gr.Button(
+                        "📚", size="sm", scale=0,
+                        elem_classes=["compact-btn"])
 
                 stats_html = gr.HTML(_stats_html(KnowledgeGraph()))
 
                 with gr.Accordion("📝 Импорт из НЛ", open=False):
-                    text_file_input = gr.File(label="Файл (txt, pdf, docx, fb2)", file_types=[".txt", ".pdf", ".docx", ".fb2"], elem_classes=["compact-file"])
-                    file_status = gr.HTML("")
-                    open_modal_btn = gr.Button("📝 Открыть текст", size="sm", visible=False, elem_classes=["compact-btn"])
+                    nl_package_status = gr.HTML(_nl_package_status_html())
 
-                    nl_text = gr.Textbox(label="Краткий текст", lines=3, elem_classes=["compact-tb"])
-                    with gr.Row(equal_height=True, elem_classes=["nowrap-row"]):
-                        btn_full_graph = gr.Button("📊 Факты", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"], variant="primary")
-                        btn_extract_query = gr.Button("❓ Запрос", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
-                        clear_text_btn = gr.Button("🗑️", size="sm", scale=0, min_width=0, elem_classes=["compact-btn"])
-                        
-                    log_filtered_cb = gr.Checkbox(label="🛡️ Логировать отфильтрованное", value=True)
+                    text_file_input = gr.File(
+                        label="Файл (txt, pdf, docx, fb2)",
+                        file_types=[".txt", ".pdf", ".docx", ".fb2"],
+                        elem_classes=["compact-file"])
+                    file_status = gr.HTML("")
+                    open_modal_btn = gr.Button(
+                        "📝 Открыть текст", size="sm", visible=False,
+                        elem_classes=["compact-btn"])
+
+                    nl_text = gr.Textbox(
+                        label="Краткий текст", lines=3,
+                        elem_classes=["compact-tb"])
+                    with gr.Row(equal_height=True,
+                                elem_classes=["nowrap-row"]):
+                        btn_full_graph = gr.Button(
+                            "📊 Факты", size="sm", scale=1, min_width=0,
+                            elem_classes=["compact-btn"],
+                            variant="primary")
+                        btn_extract_query = gr.Button(
+                            "❓ Запрос", size="sm", scale=1, min_width=0,
+                            elem_classes=["compact-btn"])
+                        clear_text_btn = gr.Button(
+                            "🗑️", size="sm", scale=0, min_width=0,
+                            elem_classes=["compact-btn"])
+
+                    log_filtered_cb = gr.Checkbox(
+                        label="🛡️ Логировать отфильтрованное", value=True)
                     nl_status = gr.HTML(_status_html("Готов."))
 
-                    with gr.Accordion("⚙️ Пользовательский конвертер", open=False):
-                        t2p_path_in = gr.Textbox(placeholder="Путь к .py-файлу", show_label=False, lines=1, elem_classes=["compact-tb"])
+                    with gr.Accordion(
+                        "⚙️ Пользовательский конвертер",
+                        open=not _T2P_OK,
+                    ):
+                        t2p_path_in = gr.Textbox(
+                            placeholder="Путь к .py-файлу",
+                            show_label=False, lines=1,
+                            elem_classes=["compact-tb"])
                         with gr.Row(equal_height=True):
-                            t2p_pick_btn = gr.Button("📂 Выбрать", size="sm", elem_classes=["compact-btn"])
-                            t2p_load_btn = gr.Button("✅ Загрузить", size="sm", elem_classes=["compact-btn"])
-                            t2p_reset_btn = gr.Button("↺ Встроенный", size="sm", elem_classes=["compact-btn"])
-                        t2p_status = gr.HTML(_status_html("Встроенный" if _T2P_OK else "Недоступен"))
+                            t2p_pick_btn = gr.Button(
+                                "📂 Выбрать", size="sm",
+                                elem_classes=["compact-btn"])
+                            t2p_load_btn = gr.Button(
+                                "✅ Загрузить", size="sm",
+                                elem_classes=["compact-btn"])
+                            t2p_reset_btn = gr.Button(
+                                "↺ Встроенный", size="sm",
+                                elem_classes=["compact-btn"])
+                        t2p_status = gr.HTML(_status_html(
+                            "Встроенный" if _T2P_OK else "Недоступен"))
 
                 with gr.Accordion("📥 Импорт из Prolog", open=False):
-                    import_code = gr.Code(language=None, lines=8, value="% Вставьте Prolog-код")
-                    import_btn = gr.Button("📥 Разобрать", size="sm", elem_classes=["compact-btn"])
+                    import_code = gr.Code(
+                        language=None, lines=8,
+                        value="% Вставьте Prolog-код")
+                    import_btn = gr.Button(
+                        "📥 Разобрать", size="sm",
+                        elem_classes=["compact-btn"])
                     import_status = gr.HTML(_status_html("Готов."))
 
                 with gr.Accordion("🔬 Диагностика", open=False):
-                    diag_btn = gr.Button("🔄 Показать", size="sm", elem_classes=["compact-btn"])
+                    diag_btn = gr.Button(
+                        "🔄 Показать", size="sm",
+                        elem_classes=["compact-btn"])
                     diag_json = gr.JSON(label="", show_label=False)
 
             # КОЛОНКА 2
@@ -1368,20 +1675,37 @@ def build_ui() -> gr.Blocks:
                             type="array",
                             interactive=False,
                             wrap=True,
-                            elem_classes=["compact-table"]
-                        )
+                            elem_classes=["compact-table"])
                         with gr.Row(equal_height=True):
-                            nid_in = gr.Textbox(placeholder="id (apple)", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            ntype_in = gr.Textbox(placeholder="type (org, person...)", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            add_node_btn = gr.Button("➕", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
-                        
+                            nid_in = gr.Textbox(
+                                placeholder="id (apple)",
+                                show_label=False, scale=2,
+                                elem_classes=["compact-tb"])
+                            ntype_in = gr.Textbox(
+                                placeholder="type (org, person...)",
+                                show_label=False, scale=2,
+                                elem_classes=["compact-tb"])
+                            add_node_btn = gr.Button(
+                                "➕", size="sm", scale=1, min_width=0,
+                                elem_classes=["compact-btn"])
+
                         with gr.Row(equal_height=True):
-                            edit_node_id_in = gr.Textbox(placeholder="ID", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            edit_node_type_in = gr.Textbox(placeholder="Type", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            edit_node_btn = gr.Button("💾", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
-                            del_node_btn = gr.Button("🗑️", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
-                        
-                        node_msg = gr.Textbox(label="", show_label=False, interactive=False, lines=1, elem_classes=["compact-tb"])
+                            edit_node_id_in = gr.Textbox(
+                                placeholder="ID", show_label=False, scale=2,
+                                elem_classes=["compact-tb"])
+                            edit_node_type_in = gr.Textbox(
+                                placeholder="Type", show_label=False, scale=2,
+                                elem_classes=["compact-tb"])
+                            edit_node_btn = gr.Button(
+                                "💾", size="sm", scale=1, min_width=0,
+                                elem_classes=["compact-btn"])
+                            del_node_btn = gr.Button(
+                                "🗑️", size="sm", scale=1, min_width=0,
+                                elem_classes=["compact-btn"])
+
+                        node_msg = gr.Textbox(
+                            label="", show_label=False, interactive=False,
+                            lines=1, elem_classes=["compact-tb"])
 
                     with gr.Tab("Рёбра"):
                         edges_tbl = gr.Dataframe(
@@ -1390,183 +1714,318 @@ def build_ui() -> gr.Blocks:
                             type="array",
                             interactive=False,
                             wrap=True,
-                            elem_classes=["compact-table"]
-                        )
+                            elem_classes=["compact-table"])
                         with gr.Row(equal_height=True):
-                            esrc_in = gr.Textbox(placeholder="source", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            etgt_in = gr.Textbox(placeholder="target", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            epred_in = gr.Textbox(placeholder="predicate", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            add_edge_btn = gr.Button("➕", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
+                            esrc_in = gr.Textbox(
+                                placeholder="source", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            etgt_in = gr.Textbox(
+                                placeholder="target", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            epred_in = gr.Textbox(
+                                placeholder="predicate", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            add_edge_btn = gr.Button(
+                                "➕", size="sm", scale=1, min_width=0,
+                                elem_classes=["compact-btn"])
 
                         with gr.Row(equal_height=True):
-                            edit_edge_src_in = gr.Textbox(placeholder="Source", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            edit_edge_tgt_in = gr.Textbox(placeholder="Target", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            edit_edge_pred_in = gr.Textbox(placeholder="Predicate", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            edit_edge_btn = gr.Button("💾", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
-                            del_edge_btn = gr.Button("🗑️", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
+                            edit_edge_src_in = gr.Textbox(
+                                placeholder="Source", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            edit_edge_tgt_in = gr.Textbox(
+                                placeholder="Target", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            edit_edge_pred_in = gr.Textbox(
+                                placeholder="Predicate", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            edit_edge_btn = gr.Button(
+                                "💾", size="sm", scale=1, min_width=0,
+                                elem_classes=["compact-btn"])
+                            del_edge_btn = gr.Button(
+                                "🗑️", size="sm", scale=1, min_width=0,
+                                elem_classes=["compact-btn"])
 
-                        edge_msg = gr.Textbox(label="", show_label=False, interactive=False, lines=1, elem_classes=["compact-tb"])
+                        edge_msg = gr.Textbox(
+                            label="", show_label=False, interactive=False,
+                            lines=1, elem_classes=["compact-tb"])
 
                     with gr.Tab("Атрибуты"):
                         attrs_tbl = gr.HTML(_attrs_html(KnowledgeGraph()))
                         with gr.Row(equal_height=True):
-                            aent_in = gr.Textbox(placeholder="entity", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            aname_in = gr.Textbox(placeholder="name", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            aval_in = gr.Textbox(placeholder="value", show_label=False, scale=2, elem_classes=["compact-tb"])
-                            add_attr_btn = gr.Button("➕", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
+                            aent_in = gr.Textbox(
+                                placeholder="entity", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            aname_in = gr.Textbox(
+                                placeholder="name", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            aval_in = gr.Textbox(
+                                placeholder="value", show_label=False,
+                                scale=2, elem_classes=["compact-tb"])
+                            add_attr_btn = gr.Button(
+                                "➕", size="sm", scale=1, min_width=0,
+                                elem_classes=["compact-btn"])
                         with gr.Row(equal_height=True):
-                            del_attr_dd = gr.Dropdown(choices=[], label="Удалить", show_label=False, scale=4)
-                            del_attr_btn = gr.Button("🗑️", size="sm", scale=1, min_width=0, elem_classes=["compact-btn"])
-                        attr_msg = gr.Textbox(label="", show_label=False, interactive=False, lines=1, elem_classes=["compact-tb"])
+                            del_attr_dd = gr.Dropdown(
+                                choices=[], label="Удалить",
+                                show_label=False, scale=4)
+                            del_attr_btn = gr.Button(
+                                "🗑️", size="sm", scale=1, min_width=0,
+                                elem_classes=["compact-btn"])
+                        attr_msg = gr.Textbox(
+                            label="", show_label=False, interactive=False,
+                            lines=1, elem_classes=["compact-tb"])
 
                     with gr.Tab("🛡️ Отфильтровано"):
-                        filtered_tbl = gr.HTML(_empty_table_html("Нет данных. Включите логирование."))
+                        filtered_tbl = gr.HTML(_empty_table_html(
+                            "Нет данных. Включите логирование."))
 
                     with gr.Tab("Prolog source"):
                         src_preview = gr.HTML(_prolog_code_html(""))
                         with gr.Accordion("✏️ Редактировать", open=False):
-                            src_code = gr.Code(language=None, lines=18, value="% Нажмите 🔄")
+                            src_code = gr.Code(
+                                language=None, lines=18,
+                                value="% Нажмите 🔄")
                         with gr.Row(equal_height=True):
-                            serialize_btn = gr.Button("🔄 Обновить из графа", size="sm", elem_classes=["compact-btn"])
-                            parse_src_btn = gr.Button("📥 Применить", size="sm", elem_classes=["compact-btn"])
+                            serialize_btn = gr.Button(
+                                "🔄 Обновить из графа", size="sm",
+                                elem_classes=["compact-btn"])
+                            parse_src_btn = gr.Button(
+                                "📥 Применить", size="sm",
+                                elem_classes=["compact-btn"])
                         src_status = gr.HTML(_status_html("Готов."))
 
             # КОЛОНКА 3
             with gr.Column(scale=4, min_width=420):
-                gr.HTML('<div class="col-head">🖼️ Визуализация (PyVis)</div>')
+                gr.HTML(
+                    '<div class="col-head">🖼️ Визуализация (PyVis)</div>')
                 graph_html = gr.HTML(render_pyvis(None))
 
                 gr.HTML('<div class="col-head">🔎 Запросы</div>')
-                query_in = gr.Textbox(placeholder="edge(X, Y, owns).", lines=3, show_label=False, elem_classes=["compact-tb"])
+                query_in = gr.Textbox(
+                    placeholder="edge(X, Y, owns).", lines=3,
+                    show_label=False, elem_classes=["compact-tb"])
                 with gr.Row(equal_height=True):
-                    run_q_btn = gr.Button("▶ Запрос", size="sm", elem_classes=["compact-btn"])
-                    help_btn = gr.Button("ℹ️ Помощь", size="sm", elem_classes=["compact-btn"])
+                    run_q_btn = gr.Button(
+                        "▶ Запрос", size="sm",
+                        elem_classes=["compact-btn"])
+                    help_btn = gr.Button(
+                        "ℹ️ Помощь", size="sm",
+                        elem_classes=["compact-btn"])
 
-                query_status = gr.Textbox(label="", show_label=False, interactive=False, lines=1, elem_classes=["compact-tb"])
+                query_status = gr.Textbox(
+                    label="", show_label=False, interactive=False,
+                    lines=1, elem_classes=["compact-tb"])
                 query_out = gr.JSON(label="Решения", show_label=False)
 
                 if not _AGENT_OK:
-                    gr.Markdown(f"⚠️ PyAgentProlog не загружен")
+                    gr.Markdown("⚠️ PyAgentProlog не загружен")
 
         # Модальное окно
-        with gr.Column(visible=False, elem_classes=["modal-overlay"]) as modal_col:
+        with gr.Column(visible=False,
+                       elem_classes=["modal-overlay"]) as modal_col:
             with gr.Column(elem_classes=["modal-content"]):
                 gr.HTML('<div class="col-head">📄 Текст</div>')
-                modal_text = gr.Textbox(lines=20, show_label=False, elem_classes=["modal-textarea"])
+                modal_text = gr.Textbox(
+                    lines=20, show_label=False,
+                    elem_classes=["modal-textarea"])
                 with gr.Row():
-                    modal_apply_btn = gr.Button("✅ Применить", size="sm", variant="primary")
-                    modal_cancel_btn = gr.Button("❌ Отмена", size="sm")
+                    modal_apply_btn = gr.Button(
+                        "✅ Применить", size="sm", variant="primary")
+                    modal_cancel_btn = gr.Button(
+                        "❌ Отмена", size="sm")
 
         # =================================================================
         # Wiring
         # =================================================================
         refresh_outs = [
             graph_state, nodes_tbl, edges_tbl, attrs_tbl,
-            stats_html, graph_html
+            stats_html, graph_html,
         ]
 
-        # Настройки
+        # Настройки конвертера
         t2p_pick_btn.click(_h_pick_t2p, [], [t2p_path_in])
-        t2p_load_btn.click(h_load_t2p_module, [t2p_path_in], [t2p_cls_state, t2p_status])
-        t2p_reset_btn.click(lambda: (None, _status_html("↺ Сброшено")), [], [t2p_cls_state, t2p_status])
+
+        t2p_load_btn.click(
+            h_load_t2p_module, [t2p_path_in], [t2p_cls_state, t2p_status],
+        ).then(
+            lambda c: _nl_package_status_html(t2p_custom=(c is not None)),
+            [t2p_cls_state],
+            [nl_package_status],
+        )
+
+        t2p_reset_btn.click(
+            lambda: (None, _status_html("↺ Сброшено")),
+            [],
+            [t2p_cls_state, t2p_status],
+        ).then(
+            lambda: _nl_package_status_html(),
+            [],
+            [nl_package_status],
+        )
 
         # Импорт НЛ
-        text_file_input.upload(h_load_text_file, [text_file_input], [nl_text_state, file_status, open_modal_btn, modal_col])
-        open_modal_btn.click(h_open_modal, [nl_text_state], [modal_col, modal_text])
-        modal_apply_btn.click(h_apply_modal, [modal_text], [modal_col, nl_text_state, file_status])
-        modal_cancel_btn.click(lambda: gr.update(visible=False), [], [modal_col])
-        clear_text_btn.click(h_clear_nl, [], [nl_text, nl_text_state, file_status, open_modal_btn, modal_col])
+        text_file_input.upload(
+            h_load_text_file, [text_file_input],
+            [nl_text_state, file_status, open_modal_btn, modal_col])
+        open_modal_btn.click(
+            h_open_modal, [nl_text_state], [modal_col, modal_text])
+        modal_apply_btn.click(
+            h_apply_modal, [modal_text],
+            [modal_col, nl_text_state, file_status])
+        modal_cancel_btn.click(
+            lambda: gr.update(visible=False), [], [modal_col])
+        clear_text_btn.click(
+            h_clear_nl, [],
+            [nl_text, nl_text_state, file_status, open_modal_btn, modal_col])
 
         btn_full_graph.click(
             h_import_full_graph,
-            [graph_state, nl_text, nl_text_state, t2p_cls_state, log_filtered_cb],
+            [graph_state, nl_text, nl_text_state, t2p_cls_state,
+             log_filtered_cb],
             [nl_status, graph_state, filtered_tbl],
-        ).then(lambda g: _refresh(g), [graph_state], refresh_outs)
+        ).then(
+            lambda g: _refresh(g), [graph_state], refresh_outs)
 
-        btn_extract_query.click(h_extract_query, [nl_text, nl_text_state, t2p_cls_state], [query_in, nl_status])
-        import_btn.click(h_parse_source, [graph_state, import_code], [graph_state, src_status]).then(lambda g: _refresh(g), [graph_state], refresh_outs)
+        btn_extract_query.click(
+            h_extract_query,
+            [nl_text, nl_text_state, t2p_cls_state],
+            [query_in, nl_status])
+
+        import_btn.click(
+            h_parse_source, [graph_state, import_code],
+            [graph_state, src_status],
+        ).then(
+            lambda g: _refresh(g), [graph_state], refresh_outs)
 
         # Проект
-        open_btn.click(h_open_file, [graph_state], refresh_outs + [import_status]).then(_serialize_and_preview, [graph_state], [src_code, src_preview])
-        new_btn.click(h_new_project, [graph_state], refresh_outs + [import_status]).then(_serialize_and_preview, [graph_state], [src_code, src_preview])
-        example_btn.click(h_load_example, [graph_state], refresh_outs + [import_status]).then(_serialize_and_preview, [graph_state], [src_code, src_preview])
-        save_btn.click(h_save_file, [graph_state, current_path], [import_status, current_path])
+        open_btn.click(
+            h_open_file, [graph_state],
+            refresh_outs + [import_status],
+        ).then(
+            _serialize_and_preview, [graph_state],
+            [src_code, src_preview])
+        new_btn.click(
+            h_new_project, [graph_state],
+            refresh_outs + [import_status],
+        ).then(
+            _serialize_and_preview, [graph_state],
+            [src_code, src_preview])
+        example_btn.click(
+            h_load_example, [graph_state],
+            refresh_outs + [import_status],
+        ).then(
+            _serialize_and_preview, [graph_state],
+            [src_code, src_preview])
+        save_btn.click(
+            h_save_file, [graph_state, current_path],
+            [import_status, current_path])
 
-        # Узлы: Добавление и выбор
-        add_node_btn.click(h_add_node, [graph_state, nid_in, ntype_in], refresh_outs + [nid_in, node_msg])
-        
+        # Узлы
+        add_node_btn.click(
+            h_add_node, [graph_state, nid_in, ntype_in],
+            refresh_outs + [nid_in, node_msg])
+
         nodes_tbl.select(
-            h_select_node,
-            [graph_state],
-            [edit_node_id_in, edit_node_type_in, sel_node_id]
-        )
-        
+            h_select_node, [graph_state],
+            [edit_node_id_in, edit_node_type_in, sel_node_id])
+
         edit_node_btn.click(
             h_edit_node,
             [graph_state, sel_node_id, edit_node_id_in, edit_node_type_in],
-            refresh_outs + [node_msg]
-        )
-        
-        del_node_btn.click(
-            h_del_node_selected,
-            [graph_state, sel_node_id],
-            refresh_outs + [node_msg]
-        )
+            refresh_outs + [node_msg])
 
-        # Рёбра: Добавление и выбор
-        add_edge_btn.click(h_add_edge, [graph_state, esrc_in, etgt_in, epred_in], refresh_outs + [esrc_in, etgt_in, edge_msg])
-        
+        del_node_btn.click(
+            h_del_node_selected, [graph_state, sel_node_id],
+            refresh_outs + [node_msg])
+
+        # Рёбра
+        add_edge_btn.click(
+            h_add_edge, [graph_state, esrc_in, etgt_in, epred_in],
+            refresh_outs + [esrc_in, etgt_in, edge_msg])
+
         edges_tbl.select(
-            h_select_edge,
-            [graph_state],
-            [edit_edge_src_in, edit_edge_tgt_in, edit_edge_pred_in, sel_edge_idx]
-        )
-        
+            h_select_edge, [graph_state],
+            [edit_edge_src_in, edit_edge_tgt_in, edit_edge_pred_in,
+             sel_edge_idx])
+
         edit_edge_btn.click(
             h_edit_edge,
-            [graph_state, sel_edge_idx, edit_edge_src_in, edit_edge_tgt_in, edit_edge_pred_in],
-            refresh_outs + [edge_msg]
-        )
-        
+            [graph_state, sel_edge_idx, edit_edge_src_in,
+             edit_edge_tgt_in, edit_edge_pred_in],
+            refresh_outs + [edge_msg])
+
         del_edge_btn.click(
-            h_del_edge_selected,
-            [graph_state, sel_edge_idx],
-            refresh_outs + [edge_msg]
-        )
+            h_del_edge_selected, [graph_state, sel_edge_idx],
+            refresh_outs + [edge_msg])
 
         # Атрибуты
-        add_attr_btn.click(h_add_attr, [graph_state, aent_in, aname_in, aval_in], refresh_outs + [aent_in, aname_in, attr_msg])
+        add_attr_btn.click(
+            h_add_attr, [graph_state, aent_in, aname_in, aval_in],
+            refresh_outs + [aent_in, aname_in, attr_msg])
         del_attr_btn.click(h_del_attr, [graph_state, del_attr_dd], refresh_outs)
 
         # Prolog Source
-        serialize_btn.click(_serialize_and_preview, [graph_state], [src_code, src_preview])
-        src_code.change(lambda s: _prolog_code_html(s or ""), [src_code], [src_preview])
-        parse_src_btn.click(h_parse_source, [graph_state, src_code], [graph_state, src_status]).then(lambda g: _refresh(g), [graph_state], refresh_outs)
+        serialize_btn.click(
+            _serialize_and_preview, [graph_state],
+            [src_code, src_preview])
+        src_code.change(
+            lambda s: _prolog_code_html(s or ""),
+            [src_code], [src_preview])
+        parse_src_btn.click(
+            h_parse_source, [graph_state, src_code],
+            [graph_state, src_status],
+        ).then(
+            lambda g: _refresh(g), [graph_state], refresh_outs)
 
         # Запросы
-        run_q_btn.click(h_query, [graph_state, query_in], [query_out, query_status])
-        help_btn.click(lambda: _status_html("Доступно: edge/2,3 node/2,3 attribute/3 findall/3 и т.д."), [], [query_status])
+        run_q_btn.click(
+            h_query, [graph_state, query_in],
+            [query_out, query_status])
+        help_btn.click(
+            lambda: _status_html(
+                "Доступно: edge/2,3 node/2,3 attribute/3 findall/3 и т.д."),
+            [], [query_status])
 
         # Диагностика
-        diag_btn.click(lambda g, c: {"summary": _safe(g).summary(), "pyagent": _AGENT_OK, "t2p": "custom" if c else _T2P_OK}, [graph_state, t2p_cls_state], [diag_json])
+        diag_btn.click(
+            lambda g, c: {
+                "summary": _safe(g).summary(),
+                "pyagent": _AGENT_OK,
+                "t2p_ok": _T2P_OK,
+                "nl2prolog_ok": _NL2PROLOG_OK,
+                "nl2prolog_version": _NL2PROLOG_VERSION,
+                "t2p_custom": c is not None,
+                "dialog_ok": _DIALOG_OK,
+            },
+            [graph_state, t2p_cls_state],
+            [diag_json])
 
         return ui
 
 
-def launch(share: bool = False, host: str = "127.0.0.1", port: int = 7860, inbrowser: bool = True, **kwargs) -> None:
+def launch(share: bool = False, host: str = "127.0.0.1", port: int = 7861,
+           inbrowser: bool = True, **kwargs) -> None:
     ui = build_ui()
-    launch_kwargs = dict(share=share, server_name=host, server_port=port, inbrowser=inbrowser)
-    
+    launch_kwargs = dict(
+        share=share, server_name=host, server_port=port,
+        inbrowser=inbrowser)
+
     _here = os.path.dirname(os.path.abspath(__file__))
     for subdir in ("", "assets"):
         for name in ("favicon.png", "favicon.ico", "favicon.svg"):
-            path = os.path.join(_here, subdir, name) if subdir else os.path.join(_here, name)
+            path = (os.path.join(_here, subdir, name)
+                    if subdir else os.path.join(_here, name))
             if os.path.isfile(path):
                 launch_kwargs["favicon_path"] = path
                 break
 
     if _LAUNCH_THEME:
-        launch_kwargs.update(theme=_make_theme(), css=_GLOBAL_CSS, head=_DARK_FORCE_HEAD)
+        launch_kwargs.update(
+            theme=_make_theme(),
+            css=_GLOBAL_CSS,
+            head=_DARK_FORCE_HEAD,
+        )
     launch_kwargs.update(kwargs)
     ui.launch(**launch_kwargs)
 
@@ -1574,11 +2033,12 @@ def launch(share: bool = False, host: str = "127.0.0.1", port: int = 7860, inbro
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--port", type=int, default=7861)
     parser.add_argument("--share", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
-    launch(host=args.host, port=args.port, share=args.share, inbrowser=not args.no_browser)
+    launch(host=args.host, port=args.port, share=args.share,
+           inbrowser=not args.no_browser)
 
 
 if __name__ == "__main__":

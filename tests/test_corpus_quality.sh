@@ -1,1 +1,0 @@
-pytest tests/test_corpus_quality.py -v

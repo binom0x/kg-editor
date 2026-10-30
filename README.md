@@ -463,12 +463,8 @@ kg-editor/
 │   └── assets/
 │       └── favicon.png        
 │
-├── docs/
-│   └── guide-ru.md            
-└── tests/
-    ├── __init__.py
-    ├── test_graph_model.py    
-    └── test_app.py            
+└── docs/
+    └── guide-ru.md             
 ```
 
 ### File responsibilities
