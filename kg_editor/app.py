@@ -28,6 +28,13 @@ NL-импорт: опциональный. Пакет `nl2prolog` — экстр
 собственный .py-модуль с классом TextToProlog. Ядро редактора
 (граф, CRUD, Prolog-импорт/экспорт, запросы, PyVis) работает независимо.
 
+v5.13:
+    * FEAT: диалоговый режим (вкладка «💬 Диалог»).
+      — ask/answer/yes/no/reset через DialogTurn.
+      — факты из NL-утверждений автоматически применяются к графу.
+      — pending-вопрос отображается отдельной панелью.
+      — сброс dlg_state при смене экстрактора или полной замене графа.
+
 v5.12:
     * FIX: безопасный импорт dialog.py — редактор стартует без nl2prolog.
     * FIX: баннер о состоянии экстрактора (nl2prolog / пользовательский).
@@ -108,8 +115,8 @@ except ImportError:
     _NL2PROLOG_VERSION = None
 
 # ---------------------------------------------------------------------
-# Dialog — опционален, не используется в UI (заглушки), но импорт
-# должен быть безопасным, чтобы kg-editor стартовал без nl2prolog.
+# Dialog — опционален, для диалогового режима нужен DialogTurn.
+# Импорт должен быть безопасным, чтобы kg-editor стартовал без nl2prolog.
 # ---------------------------------------------------------------------
 try:
     try:
@@ -118,8 +125,8 @@ try:
         from dialog import DialogTurn, apply_facts_to_graph
     _DIALOG_OK = True
 except Exception:
-    DialogTurn = None  # type: ignore
-    apply_facts_to_graph = None  # type: ignore
+    DialogTurn = None
+    apply_facts_to_graph = None
     _DIALOG_OK = False
 
 # =====================================================================
@@ -1528,30 +1535,288 @@ def h_query(g, text):
     return sols, f"✓ {len(sols)} решение(й)"
 
 
-# ---- Dialog (опционально, не подключён к UI) -------------------------
-def h_dialog_ask(g, text, dlg_state):
+# =====================================================================
+# Dialog helpers
+# =====================================================================
+def _dialog_unavailable_banner() -> str:
+    return (
+        '<div style="padding:8px 10px;background:#161a20;'
+        'border:1px solid #f0883e;color:#f0883e;border-radius:4px;'
+        'font-size:11px;line-height:1.55;'
+        'font-family:ui-sans-serif,system-ui,sans-serif;">'
+        '⚠️ <b>Диалоговый режим недоступен.</b><br>'
+        'Модуль <code>dialog</code> не загружается — '
+        'нужен пакет <code>nl2prolog</code>.<br>'
+        '→ Установите: <code>pip install "nl2prolog[ru]"</code><br>'
+        '→ Пользовательский <code>.py</code>-экстрактор '
+        'для диалога недостаточен (нужен <code>DialogTurn</code> '
+        'из <code>nl2prolog</code>).<br>'
+        '→ Проверьте консоль на ошибки импорта <code>nl2prolog.dialog</code>.'
+        '</div>'
+    )
+
+
+def _dialog_init(t2p_cls):
+    """Создать DialogTurn или None. Требует _DIALOG_OK и экстрактор."""
+    if not _DIALOG_OK or DialogTurn is None:
+        return None
+    cls = t2p_cls if t2p_cls is not None \
+        else (TextToProlog if _T2P_OK else None)
+    if cls is None:
+        return None
+    try:
+        t2p = cls()
+        agent = Agent if _AGENT_OK else None
+        return DialogTurn(t2p=t2p, agent_factory=agent)
+    except Exception:
+        return None
+
+
+def _dialog_transcript_str(dlg_state) -> str:
+    if dlg_state is None:
+        return "(диалог не начат)"
+    try:
+        t = dlg_state.transcript(n=20)
+        return t if t else "(пусто)"
+    except Exception:
+        return "(ошибка чтения транскрипта)"
+
+
+def _dialog_pending_html(dlg_state) -> str:
+    if dlg_state is None:
+        return _empty_table_html(
+            "Диалог не начат. Введите вопрос и нажмите «▶ Спросить»."
+        )
+    pq = getattr(dlg_state, 'pending_query', '')
+    pt = getattr(dlg_state, 'pending_question_text', '')
+    if not pq:
+        return _empty_table_html(
+            "Нет ожидающего вопроса. Задайте новый вопрос "
+            "или введите утверждение."
+        )
+    return (
+        '<div style="padding:8px 10px;background:#161a20;'
+        'border:1px solid #58a6ff;border-radius:4px;'
+        'font-size:12px;font-family:ui-monospace,monospace;'
+        'line-height:1.55;">'
+        '<b style="color:#79c0ff;">⏳ Ожидающий вопрос:</b> '
+        f'<span style="color:#c7cbd1;">{_esc(pt)}</span><br>'
+        f'<b style="color:#8b949e;">Prolog:</b> '
+        f'<code style="color:#ffa657;">{_esc(pq)}</code>'
+        '</div>'
+    )
+
+def _apply_facts_local(g, facts_src: str) -> Dict[str, Any]:
+    """Применить Prolog-факты к графу через ЛОКАЛЬНЫЙ KnowledgeGraph.
+
+    Не использует apply_facts_to_graph из nl2prolog.dialog — тот
+    пытается импортировать KnowledgeGraph из своего пакета и падает
+    с 'NoneType' object has no attribute 'from_prolog'.
+
+    Возвращает dict: {nodes, edges, attributes} или {error: str}.
+    Неизвестные предикаты (user_condition/1, true_condition/1, …)
+    молча игнорируются — так же, как в старом dialog.apply_facts_to_graph.
+    """
+    if not facts_src or not facts_src.strip():
+        return {"nodes": 0, "edges": 0, "attributes": 0}
+    try:
+        new_g = KnowledgeGraph.from_prolog(facts_src)
+    except Exception as ex:
+        return {"error": f"parse: {ex}"}
+    try:
+        for n in new_g.nodes.values():
+            g.add_node(n.id, n.type, n.props)
+        for e in new_g.edges:
+            g.add_edge(e.source, e.target, e.predicate)
+        for a in new_g.attributes:
+            g.add_attribute(a.entity, a.name, a.value)
+    except Exception as ex:
+        return {"error": f"merge: {ex}"}
+    return {
+        "nodes": len(new_g.nodes),
+        "edges": len(new_g.edges),
+        "attributes": len(new_g.attributes),
+    }
+
+def _dialog_apply_facts(g, facts: str, status: str) -> str:
+    if not facts or apply_facts_to_graph is None:
+        return status
+    try:
+        _, summary = apply_facts_to_graph(g, facts)
+    except Exception as ex:
+        return status + f"\n✗ Ошибка добавления фактов: {ex}"
+
+    if isinstance(summary, dict) and "error" in summary:
+        return status + f"\n✗ Ошибка добавления фактов: {summary['error']}"
+
+    n = (summary or {}).get("nodes", 0)
+    e = (summary or {}).get("edges", 0)
+    a = (summary or {}).get("attributes", 0)
+    if n or e or a:
+        return (status +
+                f"\n✓ Факты добавлены: +{n} узлов, "
+                f"+{e} рёбер, +{a} атрибутов")
+    return status
+
+
+
+def _dialog_hint_for_no_solution(result, dlg_state) -> str:
+    """Подсказка, если pending есть, а решения нет."""
+    if not isinstance(result, dict):
+        return ""
+    if not getattr(dlg_state, 'pending_query', ''):
+        return ""
+
+    # Явное «нет решения»: ключ "result" присутствует и равен False / None.
+    # НЕ путать с успехом: при успехе ключа "result" нет вовсе, а есть
+    # непустой "solutions" — тогда .get("result") тоже вернёт None,
+    # и раньше это ложно срабатывало (v5.13.0 bug).
+    if "result" in result and result["result"] is False:
+        return ("\n💡 Решение не найдено. Нажмите ✅ Да / ❌ Нет "
+                "или введите уточнение.")
+    if "result" in result and result["result"] is None:
+        return ("\n💡 Решение не найдено. Нажмите ✅ Да / ❌ Нет "
+                "или введите уточнение.")
+
+    # Fallback: solutions — пустой список (не должно случаться, но на всякий)
+    sols = result.get("solutions")
+    if isinstance(sols, list) and len(sols) == 0:
+        return ("\n💡 Решение не найдено. Нажмите ✅ Да / ❌ Нет "
+                "или введите уточнение.")
+
+    return ""
+
+
+# =====================================================================
+# Dialog handlers
+# =====================================================================
+def h_dialog_ask(g, text, t2p_cls, dlg_state):
+    """NL-вопрос / утверждение через DialogTurn.ask()."""
+    g = _safe(g)
+    text = (text or "").strip()
+    cur_t = _dialog_transcript_str(dlg_state)
+    cur_p = _dialog_pending_html(dlg_state)
+
+    if not text:
+        return (g, dlg_state, {},
+                _status_html("✗ Пустой ввод"), cur_t, cur_p)
+
     if not _DIALOG_OK:
-        return ({"result": None},
-                "⚠️ dialog.py недоступен (nl2prolog не установлен)",
-                dlg_state)
-    return ({"result": "Диалог отключен в этой версии"},
-            "✗ Функция в разработке", dlg_state)
+        return (g, dlg_state, {"error": "dialog недоступен"},
+                _status_html(
+                    "✗ dialog.py недоступен. "
+                    "Установите: pip install \"nl2prolog[ru]\""
+                ), cur_t, cur_p)
+
+    if dlg_state is None:
+        dlg_state = _dialog_init(t2p_cls)
+        if dlg_state is None:
+            return (g, dlg_state, {"error": "не инициализируется"},
+                    _status_html(
+                        "✗ Не удалось инициализировать диалог. "
+                        "Проверьте, что установлен nl2prolog "
+                        "и задан экстрактор."
+                    ), cur_t, cur_p)
+
+    try:
+        result, status = dlg_state.ask(g, text)
+    except Exception as e:
+        return (g, dlg_state, {"error": str(e)},
+                _status_html(f"✗ {e}"),
+                _dialog_transcript_str(dlg_state),
+                _dialog_pending_html(dlg_state))
+
+    # Не вопрос — применяем извлечённые факты к графу
+    if isinstance(result, dict) and result.get("is_question") is False:
+        facts = result.get("facts_extracted", "")
+        status = _dialog_apply_facts(g, facts, status)
+        # Парсер не извлёк запрос из вопроса — предупреждаем
+        if text.strip().endswith("?") and not (
+            isinstance(result.get("solutions"), list)
+            and result["solutions"]
+        ):
+            status += (
+                "\n⚠️ Вопрос не распознан парсером "
+                "(NL-экстрактор вернул пустой запрос). "
+                "Извлечены только факты из текста.\n"
+                "💡 Попробуйте переформулировать вопрос."
+            )
+
+    status += _dialog_hint_for_no_solution(result, dlg_state)
+
+    return (g, dlg_state, result, _status_html(status),
+            _dialog_transcript_str(dlg_state),
+            _dialog_pending_html(dlg_state))
 
 
-def h_dialog_answer(g, text, dlg_state):
-    return g, "✗ Функция в разработке", "", dlg_state, {}
+def h_dialog_answer(g, text, t2p_cls, dlg_state):
+    """NL-ответ на pending-вопрос через DialogTurn.answer()."""
+    g = _safe(g)
+    text = (text or "").strip()
+    cur_t = _dialog_transcript_str(dlg_state)
+    cur_p = _dialog_pending_html(dlg_state)
+
+    if not text:
+        return (g, dlg_state, {},
+                _status_html("✗ Пустой ответ"), cur_t, cur_p)
+
+    if not _DIALOG_OK or dlg_state is None:
+        return (g, dlg_state, {"error": "диалог не инициализирован"},
+                _status_html(
+                    "✗ Диалог не инициализирован. "
+                    "Сначала нажмите «▶ Спросить»."
+                ), cur_t, cur_p)
+
+    try:
+        facts, status = dlg_state.answer(g, text)
+    except Exception as e:
+        return (g, dlg_state, {"error": str(e)},
+                _status_html(f"✗ {e}"),
+                _dialog_transcript_str(dlg_state),
+                _dialog_pending_html(dlg_state))
+
+    status = _dialog_apply_facts(g, facts, status)
+
+    return (g, dlg_state, {"facts": facts} if facts else {},
+            _status_html(status),
+            _dialog_transcript_str(dlg_state),
+            _dialog_pending_html(dlg_state))
 
 
-def h_dialog_yes(g, dlg_state):
-    return g, "✗ Функция в разработке", "", dlg_state, {}
+def h_dialog_yes(g, t2p_cls, dlg_state):
+    if dlg_state is None or not getattr(dlg_state, 'pending_query', ''):
+        return (g, dlg_state, {},
+                _status_html(
+                    "ℹ️ Нет ожидающего вопроса. "
+                    "Сначала нажмите «▶ Спросить»."
+                ),
+                _dialog_transcript_str(dlg_state),
+                _dialog_pending_html(dlg_state))
+    return h_dialog_answer(g, "да", t2p_cls, dlg_state)
 
 
-def h_dialog_no(g, dlg_state):
-    return g, "✗ Функция в разработке", "", dlg_state, {}
+def h_dialog_no(g, t2p_cls, dlg_state):
+    if dlg_state is None or not getattr(dlg_state, 'pending_query', ''):
+        return (g, dlg_state, {},
+                _status_html(
+                    "ℹ️ Нет ожидающего вопроса. "
+                    "Сначала нажмите «▶ Спросить»."
+                ),
+                _dialog_transcript_str(dlg_state),
+                _dialog_pending_html(dlg_state))
+    return h_dialog_answer(g, "нет", t2p_cls, dlg_state)
 
 
-def h_dialog_transcript(dlg_state):
-    return "✗ Функция в разработке"
+def h_dialog_reset(g, dlg_state):
+    if dlg_state is not None and hasattr(dlg_state, 'reset'):
+        try:
+            dlg_state.reset()
+        except Exception:
+            pass
+    return (dlg_state,
+            _status_html("✓ Диалог сброшен (pending очищен, история сохранена)"),
+            _dialog_transcript_str(dlg_state),
+            _dialog_pending_html(dlg_state))
 
 
 # =====================================================================
@@ -1574,6 +1839,7 @@ def build_ui() -> gr.Blocks:
 
         sel_node_id = gr.State("")
         sel_edge_idx = gr.State("")
+        dlg_state = gr.State(None)
 
         with gr.Row(equal_height=False):
             # КОЛОНКА 1
@@ -1780,6 +2046,66 @@ def build_ui() -> gr.Blocks:
                         filtered_tbl = gr.HTML(_empty_table_html(
                             "Нет данных. Включите логирование."))
 
+                    with gr.Tab("💬 Диалог"):
+                        if not _DIALOG_OK:
+                            gr.HTML(_dialog_unavailable_banner())
+
+                        with gr.Column(visible=_DIALOG_OK):
+                            gr.HTML(
+                                '<div style="font-size:11px;color:#8b949e;'
+                                'margin-bottom:6px;line-height:1.5;">'
+                                'Задайте вопрос или утверждение на '
+                                'естественном языке. '
+                                'Вопрос → попытка найти ответ в графе. '
+                                'Утверждение → извлечённые факты добавятся '
+                                'в граф. Если ответ не найден — уточните '
+                                '(✅/❌) или введите новый текст.'
+                                '</div>'
+                            )
+
+                            dialog_pending = gr.HTML(_empty_table_html(
+                                "Диалог не начат. Введите вопрос и нажмите "
+                                "«▶ Спросить»."))
+
+                            dlg_text = gr.Textbox(
+                                label="", show_label=False,
+                                placeholder="Например: У меня есть лицензия?",
+                                lines=3, elem_classes=["compact-tb"])
+
+                            with gr.Row(equal_height=True):
+                                dlg_ask_btn = gr.Button(
+                                    "▶ Спросить", size="sm",
+                                    scale=1, min_width=0,
+                                    elem_classes=["compact-btn"],
+                                    variant="primary")
+                                dlg_answer_btn = gr.Button(
+                                    "💬 Ответить", size="sm",
+                                    scale=1, min_width=0,
+                                    elem_classes=["compact-btn"])
+                                dlg_yes_btn = gr.Button(
+                                    "✅", size="sm",
+                                    scale=0, min_width=0,
+                                    elem_classes=["compact-btn"])
+                                dlg_no_btn = gr.Button(
+                                    "❌", size="sm",
+                                    scale=0, min_width=0,
+                                    elem_classes=["compact-btn"])
+                                dlg_reset_btn = gr.Button(
+                                    "🗑️", size="sm",
+                                    scale=0, min_width=0,
+                                    elem_classes=["compact-btn"])
+
+                            dlg_status_html = gr.HTML(
+                                _status_html("Готов к диалогу"))
+                            dlg_result = gr.JSON(label="", show_label=False)
+
+                            gr.HTML('<div class="col-head">📜 Транскрипт</div>')
+                            dlg_transcript_box = gr.Textbox(
+                                label="", show_label=False,
+                                interactive=False, lines=10,
+                                value="(диалог не начат)",
+                                elem_classes=["compact-tb"])
+
                     with gr.Tab("Prolog source"):
                         src_preview = gr.HTML(_prolog_code_html(""))
                         with gr.Accordion("✏️ Редактировать", open=False):
@@ -1852,6 +2178,8 @@ def build_ui() -> gr.Blocks:
             lambda c: _nl_package_status_html(t2p_custom=(c is not None)),
             [t2p_cls_state],
             [nl_package_status],
+        ).then(
+            lambda: None, [], [dlg_state],
         )
 
         t2p_reset_btn.click(
@@ -1862,6 +2190,8 @@ def build_ui() -> gr.Blocks:
             lambda: _nl_package_status_html(),
             [],
             [nl_package_status],
+        ).then(
+            lambda: None, [], [dlg_state],
         )
 
         # Импорт НЛ
@@ -1904,19 +2234,28 @@ def build_ui() -> gr.Blocks:
             refresh_outs + [import_status],
         ).then(
             _serialize_and_preview, [graph_state],
-            [src_code, src_preview])
+            [src_code, src_preview],
+        ).then(
+            lambda: None, [], [dlg_state],
+        )
         new_btn.click(
             h_new_project, [graph_state],
             refresh_outs + [import_status],
         ).then(
             _serialize_and_preview, [graph_state],
-            [src_code, src_preview])
+            [src_code, src_preview],
+        ).then(
+            lambda: None, [], [dlg_state],
+        )
         example_btn.click(
             h_load_example, [graph_state],
             refresh_outs + [import_status],
         ).then(
             _serialize_and_preview, [graph_state],
-            [src_code, src_preview])
+            [src_code, src_preview],
+        ).then(
+            lambda: None, [], [dlg_state],
+        )
         save_btn.click(
             h_save_file, [graph_state, current_path],
             [import_status, current_path])
@@ -1987,9 +2326,49 @@ def build_ui() -> gr.Blocks:
                 "Доступно: edge/2,3 node/2,3 attribute/3 findall/3 и т.д."),
             [], [query_status])
 
+        # Диалог
+        _dialog_outputs = [
+            graph_state, dlg_state, dlg_result, dlg_status_html,
+            dlg_transcript_box, dialog_pending,
+        ]
+
+        dlg_ask_btn.click(
+            h_dialog_ask,
+            [graph_state, dlg_text, t2p_cls_state, dlg_state],
+            _dialog_outputs,
+        ).then(
+            lambda g: _refresh(g), [graph_state], refresh_outs)
+
+        dlg_answer_btn.click(
+            h_dialog_answer,
+            [graph_state, dlg_text, t2p_cls_state, dlg_state],
+            _dialog_outputs,
+        ).then(
+            lambda g: _refresh(g), [graph_state], refresh_outs)
+
+        dlg_yes_btn.click(
+            h_dialog_yes,
+            [graph_state, t2p_cls_state, dlg_state],
+            _dialog_outputs,
+        ).then(
+            lambda g: _refresh(g), [graph_state], refresh_outs)
+
+        dlg_no_btn.click(
+            h_dialog_no,
+            [graph_state, t2p_cls_state, dlg_state],
+            _dialog_outputs,
+        ).then(
+            lambda g: _refresh(g), [graph_state], refresh_outs)
+
+        dlg_reset_btn.click(
+            h_dialog_reset,
+            [graph_state, dlg_state],
+            [dlg_state, dlg_status_html, dlg_transcript_box, dialog_pending],
+        )
+
         # Диагностика
         diag_btn.click(
-            lambda g, c: {
+            lambda g, c, ds: {
                 "summary": _safe(g).summary(),
                 "pyagent": _AGENT_OK,
                 "t2p_ok": _T2P_OK,
@@ -1997,8 +2376,12 @@ def build_ui() -> gr.Blocks:
                 "nl2prolog_version": _NL2PROLOG_VERSION,
                 "t2p_custom": c is not None,
                 "dialog_ok": _DIALOG_OK,
+                "dialog_active": ds is not None,
+                "dialog_pending": bool(
+                    getattr(ds, 'pending_query', '') if ds else False
+                ),
             },
-            [graph_state, t2p_cls_state],
+            [graph_state, t2p_cls_state, dlg_state],
             [diag_json])
 
         return ui

@@ -83,10 +83,14 @@ _PYVIS_OPTIONS = """{
       "centralGravity": 0.3,
       "springLength": 180,
       "springConstant": 0.04,
-      "damping": 0.09,
-      "avoidOverlap": 0.5
+      "damping": 0.09
     },
-    "stabilization": { "iterations": 150 }
+    "stabilization": {
+      "enabled": true,
+      "iterations": 300,
+      "updateInterval": 50,
+      "fit": true
+    }
   },
   "interaction": {
     "hover": true,
@@ -107,7 +111,7 @@ _PYVIS_OPTIONS = """{
   },
   "edges": {
     "width": 2.5,
-    "smooth": { "type": "dynamic" },
+    "smooth": { "type": "continuous" },
     "color": {
       "color": "#8b949e",
       "highlight": "#58a6ff",
@@ -125,6 +129,51 @@ _PYVIS_OPTIONS = """{
   }
 }"""
 
+# Замораживает physics сразу после stabilization.
+# Без этого vis-network продолжает пересчитывать силы каждый кадр
+# → «дрожит»/«вращается». Хук ставится на window.network — PyVis
+# создаёт network как top-level var, поэтому он доступен глобально.
+_PYVIS_FREEZE_JS = """
+<script>
+(function () {
+    'use strict';
+
+    function freeze(network) {
+        var frozen = false;
+        function doFreeze() {
+            if (frozen) return;
+            frozen = true;
+            try { network.setOptions({ physics: false }); } catch (e) {}
+        }
+        try {
+            network.once('stabilizationIterationsDone', doFreeze);
+        } catch (e) {}
+        // Fallback: если событие уже прошло или не сработает —
+        // замораживаем по таймеру, чтобы не висеть в нестабильном виде.
+        setTimeout(doFreeze, 2500);
+    }
+
+    function waitNetwork(tries) {
+        tries = tries | 0;
+        if (window.network
+                && typeof window.network.setOptions === 'function') {
+            freeze(window.network);
+            return;
+        }
+        if (tries > 120) return;   // ~6 секунд ожидания, потом сдаёмся
+        setTimeout(function () { waitNetwork(tries + 1); }, 50);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () {
+            waitNetwork(0);
+        });
+    } else {
+        waitNetwork(0);
+    }
+})();
+</script>
+"""
 
 def render_pyvis(graph,
                  height_ratio: str = "12/7",
@@ -285,6 +334,10 @@ def render_pyvis(graph,
         html_content = html_content.replace(
             "</head>",
             f"<style>{_PYVIS_INJECT}</style></head>",
+        )
+        html_content = html_content.replace(
+            "</body>",
+            _PYVIS_FREEZE_JS + "</body>",
         )
 
         escaped = _esc(html_content)   # html.escape(quote=True) → srcdoc-safe
