@@ -1437,6 +1437,51 @@ def h_parse_source(g, code):
         return g, _status_html(f"✗ {e}")
 
 
+def h_merge_file(g):
+    """Объединить текущий граф с графом из файла (аддитивно)."""
+    g = _safe(g)
+    p = _pick_file(
+        title="Объединить с графом (.pl)",
+        filetypes=[("Prolog (*.pl)", "*.pl"), ("All files", "*.*")],
+    )
+    if not p:
+        return _refresh(g) + (_status_html("Файл не выбран"),)
+    try:
+        with open(p, encoding="utf-8") as f:
+            content = f.read()
+        stats = g.merge_from_prolog(content)
+
+        added = (stats["added_nodes"]
+                 + stats["added_edges"]
+                 + stats["added_attributes"])
+        skipped = (stats["skipped_nodes"]
+                   + stats["skipped_edges"]
+                   + stats["skipped_attributes"])
+
+        if added == 0 and skipped == 0:
+            msg = f"ℹ️ Файл пуст: {p}"
+        elif added == 0:
+            msg = (
+                f"ℹ️ Нечего добавлять: {p}\n"
+                f"  Всё уже есть в графе "
+                f"({skipped} элементов пропущено)."
+            )
+        else:
+            msg = (
+                f"✓ Объединено: {p}\n"
+                f"  +{stats['added_nodes']} узлов, "
+                f"+{stats['added_edges']} рёбер, "
+                f"+{stats['added_attributes']} атрибутов\n"
+                f"  пропущено (уже есть или невалидно): "
+                f"{stats['skipped_nodes']} узлов, "
+                f"{stats['skipped_edges']} рёбер, "
+                f"{stats['skipped_attributes']} атрибутов"
+            )
+        return _refresh(g) + (_status_html(msg),)
+    except Exception as e:
+        return _refresh(g) + (_status_html(f"✗ Ошибка объединения: {e}"),)
+
+
 def h_open_file(g):
     p = _pick_file(title="Открыть .pl графа")
     if not p:
@@ -1849,6 +1894,9 @@ def build_ui() -> gr.Blocks:
                     open_btn = gr.Button(
                         "📂 Открыть", size="sm",
                         elem_classes=["compact-btn"])
+                    merge_btn = gr.Button(              # ← NEW
+                        "🔀 Объединить", size="sm",
+                        elem_classes=["compact-btn"])
                     new_btn = gr.Button(
                         "🆕 Создать", size="sm",
                         elem_classes=["compact-btn"])
@@ -1860,6 +1908,7 @@ def build_ui() -> gr.Blocks:
                         elem_classes=["compact-btn"])
 
                 stats_html = gr.HTML(_stats_html(KnowledgeGraph()))
+                project_status = gr.HTML(_status_html(""))
 
                 with gr.Accordion("📝 Импорт из НЛ", open=False):
                     nl_package_status = gr.HTML(_nl_package_status_html())
@@ -1921,7 +1970,7 @@ def build_ui() -> gr.Blocks:
                     import_btn = gr.Button(
                         "📥 Разобрать", size="sm",
                         elem_classes=["compact-btn"])
-                    import_status = gr.HTML(_status_html("Готов."))
+                    #import_status = gr.HTML(_status_html("Готов."))
 
                 with gr.Accordion("🔬 Диагностика", open=False):
                     diag_btn = gr.Button(
@@ -2231,7 +2280,7 @@ def build_ui() -> gr.Blocks:
         # Проект
         open_btn.click(
             h_open_file, [graph_state],
-            refresh_outs + [import_status],
+            refresh_outs + [project_status],
         ).then(
             _serialize_and_preview, [graph_state],
             [src_code, src_preview],
@@ -2240,7 +2289,7 @@ def build_ui() -> gr.Blocks:
         )
         new_btn.click(
             h_new_project, [graph_state],
-            refresh_outs + [import_status],
+            refresh_outs + [project_status],
         ).then(
             _serialize_and_preview, [graph_state],
             [src_code, src_preview],
@@ -2249,16 +2298,26 @@ def build_ui() -> gr.Blocks:
         )
         example_btn.click(
             h_load_example, [graph_state],
-            refresh_outs + [import_status],
+            refresh_outs + [project_status],
         ).then(
             _serialize_and_preview, [graph_state],
             [src_code, src_preview],
         ).then(
             lambda: None, [], [dlg_state],
         )
+        merge_btn.click(
+            h_merge_file, [graph_state],
+            refresh_outs + [project_status],
+        ).then(
+            _serialize_and_preview, [graph_state],
+            [src_code, src_preview],
+        )
+        # dlg_state НЕ сбрасываем: merge аддитивен, текущий диалог
+        # остаётся валидным. Если пользователю нужен чистый диалог —
+        # он нажмёт 🗑️ на вкладке «💬 Диалог».        
         save_btn.click(
             h_save_file, [graph_state, current_path],
-            [import_status, current_path])
+            [project_status, current_path])
 
         # Узлы
         add_node_btn.click(

@@ -8,6 +8,9 @@
 Идентификаторы по возможности пишутся БЕЗ кавычек (apple). Кавычки — только
 если атом не проходит _VALID_ATOM. Значения атрибутов всегда в кавычках.
 
+v5.13: merge() / merge_from_prolog() — аддитивное слияние графов.
+        Существующие узлы/рёбра/атрибуты НЕ перезаписываются.
+
 v5.12: fallback на nl2prolog.noise — если пакет установлен, но локального
 noise.py нет. Если ничего не установлено — фильтрация отключается,
 редактор продолжает работать.
@@ -169,6 +172,91 @@ class KnowledgeGraph:
             self.attributes.pop(idx)
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Слияние графов (аддитивно)
+    # ------------------------------------------------------------------
+    def merge(self, other: "KnowledgeGraph") -> Dict[str, int]:
+        """Слить другой граф в текущий.
+
+        Политика (аддитивная, без перезаписи):
+          * Узлы: добавляются только отсутствующие. Тип и props
+            существующих узлов НЕ меняются — текущий граф «выигрывает».
+          * Рёбра: добавляются только отсутствующие
+            (дедуп по source/target/predicate).
+          * Атрибуты: добавляются только отсутствующие
+            (дедуп по entity/name/value).
+          * Атомы, отфильтрованные generic_filter (служебные слова,
+            OCR-мусор и т.п.), пропускаются и учитываются как skipped.
+
+        Возвращает dict со статистикой:
+          added_nodes, added_edges, added_attributes,
+          skipped_nodes, skipped_edges, skipped_attributes.
+        """
+        stats = {
+            "added_nodes": 0, "skipped_nodes": 0,
+            "added_edges": 0, "skipped_edges": 0,
+            "added_attributes": 0, "skipped_attributes": 0,
+        }
+        if other is None:
+            return stats
+
+        # ---- Узлы ----
+        for nid, n in other.nodes.items():
+            if nid in self.nodes:
+                # Существующий узел не трогаем: ни тип, ни props.
+                stats["skipped_nodes"] += 1
+                continue
+            try:
+                self.add_node(nid, n.type, n.props)
+                stats["added_nodes"] += 1
+            except Exception:
+                stats["skipped_nodes"] += 1
+
+        # ---- Рёбра ----
+        existing_edges = {(e.source, e.target, e.predicate)
+                          for e in self.edges}
+        for e in other.edges:
+            key = (e.source, e.target, e.predicate)
+            if key in existing_edges:
+                stats["skipped_edges"] += 1
+                continue
+            try:
+                self.add_edge(e.source, e.target, e.predicate)
+                existing_edges.add(key)
+                stats["added_edges"] += 1
+            except Exception:
+                stats["skipped_edges"] += 1
+
+        # ---- Атрибуты ----
+        existing_attrs = {(a.entity, a.name, a.value)
+                          for a in self.attributes}
+        for a in other.attributes:
+            key = (a.entity, a.name, a.value)
+            if key in existing_attrs:
+                stats["skipped_attributes"] += 1
+                continue
+            try:
+                self.add_attribute(a.entity, a.name, a.value)
+                existing_attrs.add(key)
+                stats["added_attributes"] += 1
+            except Exception:
+                stats["skipped_attributes"] += 1
+
+        return stats
+
+    def merge_from_prolog(
+        self,
+        text: str,
+        generic_filter: Optional[Callable[[str], bool]] = None,
+    ) -> Dict[str, int]:
+        """Разобрать Prolog-текст и слить в текущий граф.
+
+        Удобная обёртка над `merge(from_prolog(text))`.
+        """
+        other = self.__class__.from_prolog(
+            text or "", generic_filter=generic_filter)
+        return self.merge(other)
 
     # ------------------------------------------------------------------
     # Сериализация
