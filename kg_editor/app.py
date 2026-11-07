@@ -1,47 +1,51 @@
 """KnowledgeGraph Editor — Gradio Blocks UI (PyAgentProlog backend).
 
-Движок запросов — PyAgentProlog (prolog.agent.Agent).
-Формат графа совместим с text_to_prolog._to_graph_program:
+Query engine — PyAgentProlog (prolog.agent.Agent).
+Graph format is compatible with text_to_prolog._to_graph_program:
 
     node(Id, Props, Type).
     edge(Source, Target, Predicate).
     attribute(Entity, Name, Value).
 
-Поверх фактов автоматически добавляются удобные правила:
+On top of the facts, convenience rules are added automatically:
 
     node(Id, Type) :- node(Id, _, Type).
     edge(S, T) :- edge(S, T, _).
 
-Поэтому в запросах можно писать:
+So queries may be written as:
     node(apple, X)
     edge(X, Y, owns)
     attribute(X, release_year, Y)
     \\+(node(X, person))
     findall(X, edge(apple, X, _), L)
 
-Каждый запрос строится на свежем агенте — мутации через assertz/retract
-живут только в рамках одного запроса и не влияют на модель графа.
+Every query is built on a fresh agent — mutations via assertz/retract
+only live within a single query and do not affect the graph model.
 
-Редактор: цветные HTML-таблицы + полноценная подсветка Prolog-исходника.
-NL-импорт: опциональный. Пакет `nl2prolog` — экстрактор по умолчанию,
-но НЕ обязательная зависимость. Без него пользователь может загрузить
-собственный .py-модуль с классом TextToProlog. Ядро редактора
-(граф, CRUD, Prolog-импорт/экспорт, запросы, PyVis) работает независимо.
+Editor: colored HTML tables + full Prolog syntax highlighting.
+NL import: optional. The `nl2prolog` package is the default extractor
+but NOT a hard dependency. Without it, the user may load a custom
+.py module with a TextToProlog class. The editor core (graph, CRUD,
+Prolog import/export, queries, PyVis) works independently.
+
+i18n: English / Russian, switchable via KG_EDITOR_LANG env var
+(same mechanism as the Fona dashboard: TRANSLATIONS table + t()).
 
 v5.13:
-    * FEAT: диалоговый режим (вкладка «💬 Диалог»).
-      — ask/answer/yes/no/reset через DialogTurn.
-      — факты из NL-утверждений автоматически применяются к графу.
-      — pending-вопрос отображается отдельной панелью.
-      — сброс dlg_state при смене экстрактора или полной замене графа.
+    * FEAT: dialog mode ("💬 Dialog" tab).
+      — ask/answer/yes/no/reset via DialogTurn.
+      — facts from NL assertions are applied to the graph automatically.
+      — pending question is shown in a dedicated panel.
+      — dlg_state is reset on extractor switch or full graph replacement.
 
 v5.12:
-    * FIX: безопасный импорт dialog.py — редактор стартует без nl2prolog.
-    * FIX: баннер о состоянии экстрактора (nl2prolog / пользовательский).
-    * FIX: при отсутствии экстрактора аккордеон «Пользовательский конвертер»
-      открыт по умолчанию.
-    * FIX: информативные сообщения в хендлерах импорта НЛ, если экстрактор
-      не задан — с указанием, как загрузить свой или установить nl2prolog.
+    * FIX: safe import of dialog.py — editor starts without nl2prolog.
+    * FIX: extractor status banner (nl2prolog / user-provided).
+    * FIX: when the extractor is missing, the "Custom converter"
+      accordion is open by default.
+    * FIX: informative messages in NL import handlers when the extractor
+      is not set — with instructions to load a custom one or install
+      nl2prolog.
 """
 from __future__ import annotations
 
@@ -59,7 +63,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import gradio as gr
 
 # ---------------------------------------------------------------------
-# Безопасное определение версии Gradio
+# Safe Gradio version detection
 # ---------------------------------------------------------------------
 try:
     _GRADIO_VERSION = tuple(int(x) for x in gr.__version__.split('.')[:2])
@@ -69,7 +73,7 @@ except ValueError:
 _LAUNCH_THEME = _GRADIO_VERSION >= (6, 0)
 
 # ---------------------------------------------------------------------
-# Импорты локальных модулей
+# Local module imports
 # ---------------------------------------------------------------------
 try:
     from .graph_model import KnowledgeGraph
@@ -79,7 +83,7 @@ except ImportError:
     from graph_layout import render_pyvis
 
 # ---------------------------------------------------------------------
-# PyAgentProlog (опционально)
+# PyAgentProlog (optional)
 # ---------------------------------------------------------------------
 try:
     from prolog.agent import Agent  # type: ignore
@@ -91,7 +95,7 @@ except Exception as _e:  # noqa: BLE001
     _AGENT_ERR = str(_e)
 
 # ---------------------------------------------------------------------
-# NL-импорт (опционально) — shim на nl2prolog или локальный
+# NL import (optional) — shim onto nl2prolog or local
 # ---------------------------------------------------------------------
 try:
     try:
@@ -104,7 +108,7 @@ except Exception:
     _T2P_OK = False
 
 # ---------------------------------------------------------------------
-# Пакет nl2prolog — отдельная проверка для диагностики
+# nl2prolog package — separate check for diagnostics
 # ---------------------------------------------------------------------
 try:
     import nl2prolog as _nl2prolog_module  # noqa: F401
@@ -115,8 +119,8 @@ except ImportError:
     _NL2PROLOG_VERSION = None
 
 # ---------------------------------------------------------------------
-# Dialog — опционален, для диалогового режима нужен DialogTurn.
-# Импорт должен быть безопасным, чтобы kg-editor стартовал без nl2prolog.
+# Dialog — optional; the dialog mode needs DialogTurn.
+# The import must be safe so kg-editor can start without nl2prolog.
 # ---------------------------------------------------------------------
 try:
     try:
@@ -129,11 +133,617 @@ except Exception:
     apply_facts_to_graph = None
     _DIALOG_OK = False
 
+
 # =====================================================================
-# Константы
+# i18n
+# =====================================================================
+TRANSLATIONS: Dict[str, Dict[str, str]] = {
+    "en": {
+        # generic
+        "title": "KnowledgeGraph Editor",
+        "lang_override_hint":
+            "override with KG_EDITOR_LANG=en|ru",
+
+        # column headers
+        "col_project": "📁 Graph / Project",
+        "col_editor": "🧩 Graph editor",
+        "col_visual": "🖼️ Visualization (PyVis)",
+        "col_queries": "🔎 Queries",
+
+        # project buttons
+        "btn_open": "📂 Open",
+        "btn_merge": "🔀 Merge",
+        "btn_new": "🆕 Create",
+        "btn_save": "💾 Save",
+        "btn_example": "📚",
+
+        # stats
+        "stats_nodes": "Nodes:",
+        "stats_edges": "Edges:",
+        "stats_attrs": "Attributes:",
+
+        # NL import accordion
+        "nl_import_title": "📝 Import from NL",
+        "nl_file_label": "File (txt, pdf, docx, fb2)",
+        "nl_open_text_btn": "📝 Open text",
+        "nl_short_text_label": "Short text",
+        "nl_btn_facts": "📊 Facts",
+        "nl_btn_query": "❓ Query",
+        "nl_btn_clear": "🗑️",
+        "nl_log_filtered": "🛡️ Log filtered",
+        "nl_status_ready": "Ready.",
+        "custom_conv_title": "⚙️ Custom converter",
+        "t2p_path_placeholder": "Path to .py file",
+        "t2p_pick": "📂 Choose",
+        "t2p_load": "✅ Load",
+        "t2p_reset": "↺ Built-in",
+        "t2p_status_builtin": "Built-in",
+        "t2p_status_unavailable": "Unavailable",
+        "t2p_reset_done": "↺ Reset",
+        "t2p_file_required": (
+            "✗ Provide the path to a .py file\n"
+            "Or install the built-in one: pip install \"nl2prolog[ru]\""
+        ),
+        "t2p_file_missing": "✗ File not found: {path}",
+        "t2p_not_py": "✗ Expected a .py file, got: {path}",
+        "t2p_spec_failed": "✗ Could not create a loader for: {path}",
+        "t2p_import_failed":
+            "✗ Import error {path}:\n{e}\n\n{tb}",
+        "t2p_no_class":
+            "✗ Module has no TextToProlog class: {path}",
+        "t2p_no_method":
+            "✗ TextToProlog has neither parse() nor convert(): {path}",
+        "t2p_no_init":
+            "✗ TextToProlog cannot be constructed without args:\n{e}",
+        "t2p_loaded":
+            "✓ Loaded module: {path}\n"
+            "  class: TextToProlog\n"
+            "  as sys.modules['{name}']",
+
+        # extractor banner
+        "nl_banner_custom":
+            "✅ <b>Custom extractor</b> connected.<br>"
+            "NL import works through your .py module.",
+        "nl_banner_pkg":
+            "✅ <b>nl2prolog {v}</b> — default extractor.<br>"
+            "NL import works out of the box.",
+        "nl_banner_pkg_no_shim":
+            "⚠️ <b>nl2prolog {v}</b> is installed, but the "
+            "<code>text_to_prolog</code> shim is not loading.<br>"
+            "Check the package installation, or load your own "
+            ".py extractor in the “⚙️ Custom converter” section below.",
+        "nl_banner_local":
+            "✅ <b>Built-in text_to_prolog</b> loaded "
+            "(the nl2prolog package was not found).<br>"
+            "NL import works through the local module.",
+        "nl_banner_none":
+            "ℹ️ <b>NL extractor is not set.</b><br>"
+            "The graph editor works fully — you can open/save "
+            "<code>.pl</code>, edit nodes/edges/attributes, "
+            "import Prolog code, and run queries.<br>"
+            "NL import (📥 Extract facts / queries) is unavailable.<br>"
+            "→ <b>Load your own <code>.py</code> extractor</b> in the "
+            "“⚙️ Custom converter” section below.<br>"
+            "→ <b>Or install:</b> <code>pip install \"nl2prolog[ru]\"</code>",
+
+        # extractor hint in handlers
+        "extractor_hint":
+            "ℹ️ NL extractor is not set.\n\n"
+            "The graph editor works fully — you can open/save .pl, "
+            "edit nodes/edges/attributes, import Prolog code, "
+            "run queries.\n\n"
+            "For NL import you need to:\n"
+            "  → Load your own .py module with a TextToProlog class\n"
+            "    in the “⚙️ Custom converter” section\n"
+            "    (parse() or convert() method)\n"
+            "  → Or install the built-in one:\n"
+            "    pip install \"nl2prolog[ru]\"\n",
+
+        # import Prolog accordion
+        "imp_prolog_title": "📥 Import from Prolog",
+        "imp_prolog_placeholder": "% Paste Prolog code",
+        "imp_prolog_btn": "📥 Parse",
+        "imp_prolog_ready": "Ready.",
+
+        # diagnostics
+        "diag_title": "🔬 Diagnostics",
+        "diag_show": "🔄 Show",
+
+        # editor tabs
+        "tab_nodes": "Nodes",
+        "tab_edges": "Edges",
+        "tab_attrs": "Attributes",
+        "tab_filtered": "🛡️ Filtered",
+        "tab_dialog": "💬 Dialog",
+        "tab_source": "Prolog source",
+
+        # nodes
+        "nodes_headers": ["id", "type", "degree"],
+        "nodes_id_placeholder": "id (apple)",
+        "nodes_type_placeholder": "type (org, person...)",
+        "nodes_edit_id_placeholder": "ID",
+        "nodes_edit_type_placeholder": "Type",
+        "nodes_add_btn": "➕",
+        "nodes_edit_btn": "💾",
+        "nodes_del_btn": "🗑️",
+        "nodes_click_hint": "✗ Click a row in the table",
+        "nodes_not_found": "✗ Node not found",
+        "nodes_already_exists": "✗ Node '{id}' already exists",
+        "nodes_rename_err": "✗ Rename error: {e}",
+        "nodes_edit_err": "✗ Error: {e}",
+        "nodes_updated": "✓ Node updated: {id}",
+        "nodes_deleted": "✓ Node {id} deleted",
+
+        # edges
+        "edges_headers": ["idx", "source", "predicate", "target"],
+        "edges_src_placeholder": "source",
+        "edges_tgt_placeholder": "target",
+        "edges_pred_placeholder": "predicate",
+        "edges_edit_src_placeholder": "Source",
+        "edges_edit_tgt_placeholder": "Target",
+        "edges_edit_pred_placeholder": "Predicate",
+        "edges_add_btn": "➕",
+        "edges_edit_btn": "💾",
+        "edges_del_btn": "🗑️",
+        "edges_click_hint": "✗ Click a row in the table",
+        "edges_not_found": "✗ Edge not found",
+        "edges_node_err": "✗ Node add error: {e}",
+        "edges_updated": "✓ Edge updated: {s} -> {t}",
+        "edges_deleted": "✓ Edge deleted",
+
+        # attributes
+        "attrs_empty": "No attributes",
+        "attrs_ent_placeholder": "entity",
+        "attrs_name_placeholder": "name",
+        "attrs_value_placeholder": "value",
+        "attrs_add_btn": "➕",
+        "attrs_del_placeholder": "Delete",
+        "attrs_del_btn": "🗑️",
+
+        # filtered
+        "filtered_empty":
+            "Nothing filtered (or logging is off).\n"
+            "Enable “🛡️ Log filtered” in the NL import block.",
+        "filtered_headers": ["term / atom", "filter reason"],
+
+        # dialog
+        "dialog_help":
+            "Ask a question or make an assertion in natural language. "
+            "Question → attempt to find an answer in the graph. "
+            "Assertion → extracted facts are added to the graph. "
+            "If no answer is found — clarify (✅/❌) or enter new text.",
+        "dialog_not_started":
+            "Dialog not started. Type a question and press “▶ Ask”.",
+        "dialog_pending_none":
+            "No pending question. Ask a new question or enter a statement.",
+        "dialog_pending_label": "⏳ Pending question:",
+        "dialog_pending_prolog": "Prolog:",
+        "dialog_text_placeholder": "For example: Do I have a license?",
+        "dialog_ask": "▶ Ask",
+        "dialog_answer": "💬 Answer",
+        "dialog_yes": "✅",
+        "dialog_no": "❌",
+        "dialog_reset": "🗑️",
+        "dialog_status_ready": "Ready for dialog",
+        "dialog_transcript_head": "📜 Transcript",
+        "dialog_transcript_none": "(dialog not started)",
+        "dialog_transcript_empty": "(empty)",
+        "dialog_transcript_err": "(transcript read error)",
+        "dialog_unavailable":
+            "⚠️ <b>Dialog mode is unavailable.</b><br>"
+            "The <code>dialog</code> module is not loading — the "
+            "<code>nl2prolog</code> package is required.<br>"
+            "→ Install: <code>pip install \"nl2prolog[ru]\"</code><br>"
+            "→ A custom <code>.py</code> extractor is not enough "
+            "for dialog mode (need <code>DialogTurn</code> from "
+            "<code>nl2prolog</code>).<br>"
+            "→ Check the console for <code>nl2prolog.dialog</code> "
+            "import errors.",
+        "dialog_empty_input": "✗ Empty input",
+        "dialog_empty_answer": "✗ Empty answer",
+        "dialog_unavailable_short":
+            "✗ dialog.py is unavailable. "
+            "Install: pip install \"nl2prolog[ru]\"",
+        "dialog_init_failed":
+            "✗ Could not initialize the dialog. "
+            "Check that nl2prolog is installed and the extractor is set.",
+        "dialog_not_initialized":
+            "✗ Dialog not initialized. Press “▶ Ask” first.",
+        "dialog_no_pending":
+            "ℹ️ No pending question. Press “▶ Ask” first.",
+        "dialog_reset_ok":
+            "✓ Dialog reset (pending cleared, history kept)",
+        "dialog_unrecognized":
+            "\n⚠️ The question was not recognized by the parser "
+            "(the NL extractor returned an empty query). "
+            "Only facts from the text were extracted.\n"
+            "💡 Try rephrasing the question.",
+        "dialog_no_solution_hint":
+            "\n💡 No solution found. Press ✅ Yes / ❌ No "
+            "or enter a clarification.",
+        "dialog_facts_added":
+            "\n✓ Facts added: +{n} nodes, +{e} edges, +{a} attributes",
+        "dialog_facts_err": "\n✗ Fact add error: {e}",
+
+        # source tab
+        "src_refresh_btn": "🔄 Refresh from graph",
+        "src_apply_btn": "📥 Apply",
+        "src_edit_accordion": "✏️ Edit",
+        "src_code_placeholder": "% Press 🔄",
+        "src_preview_empty":
+            "Press 🔄 “Refresh from graph” to serialize",
+        "src_ready": "Ready.",
+        "src_parsed": "✓ Parsed",
+
+        # queries
+        "query_placeholder": "edge(X, Y, owns).",
+        "query_run_btn": "▶ Query",
+        "query_help_btn": "ℹ️ Help",
+        "query_empty": "✗ Empty query",
+        "query_engine_missing":
+            "✗ Install prolog",
+        "query_agent_err": "✗ Agent error: {e}",
+        "query_no_solutions": "✗ No solutions",
+        "query_true": "✓ true",
+        "query_none": "No solutions",
+        "query_found": "✓ {n} solution(s)",
+        "query_help_text":
+            "Available: edge/2,3 node/2,3 attribute/3 findall/3, etc.",
+        "query_agent_not_loaded": "⚠️ PyAgentProlog not loaded",
+
+        # status labels
+        "file_not_selected": "File not selected",
+        "cancelled": "Cancelled",
+        "cleared": "Cleared",
+        "ready": "Ready.",
+        "paste_prolog": "% Paste Prolog code",
+
+        # file loading
+        "file_read_ok":
+            "✅ File loaded ({n} chars). "
+            "Press “📝 Open text” to view and edit.",
+        "file_read_err": "❌ Could not read file: {path}",
+        "file_apply_ok": "✅ Text updated.",
+        "file_unsupported": "❌ Unsupported format: {ext}",
+        "file_read_exception": "❌ File read error: {e}",
+        "file_pdf_dep": "❌ To read PDF install: pip install PyPDF2",
+        "file_docx_dep": "❌ To read DOCX install: pip install python-docx",
+
+        # project handlers
+        "proj_merged_ok":
+            "✓ Merged: {path}\n"
+            "  +{an} nodes, +{ae} edges, +{aa} attributes\n"
+            "  skipped (already present or invalid): "
+            "{sn} nodes, {se} edges, {sa} attributes",
+        "proj_merged_nothing":
+            "ℹ️ Nothing to add: {path}\n"
+            "  Everything is already in the graph "
+            "({sk} items skipped).",
+        "proj_merged_empty": "ℹ️ File is empty: {path}",
+        "proj_merge_err": "✗ Merge error: {e}",
+        "proj_loaded": "✓ Loaded: {path}",
+        "proj_saved": "✓ Saved: {path}",
+        "proj_save_no_file": "✗ No file selected",
+        "proj_new_ok": "✓ Project: {path}",
+        "proj_example_ok": "✓ Demo graph",
+
+        # dialog / chat
+        "dlg_ready": "Ready for dialog",
+        "dlg_no_dialog": "(dialog not started)",
+    },
+    "ru": {
+        "title": "KnowledgeGraph Editor",
+        "lang_override_hint":
+            "переопределение: KG_EDITOR_LANG=en|ru",
+
+        "col_project": "📁 Граф / Проект",
+        "col_editor": "🧩 Редактор графа",
+        "col_visual": "🖼️ Визуализация (PyVis)",
+        "col_queries": "🔎 Запросы",
+
+        "btn_open": "📂 Открыть",
+        "btn_merge": "🔀 Объединить",
+        "btn_new": "🆕 Создать",
+        "btn_save": "💾 Сохранить",
+        "btn_example": "📚",
+
+        "stats_nodes": "Узлов:",
+        "stats_edges": "Рёбер:",
+        "stats_attrs": "Атрибутов:",
+
+        "nl_import_title": "📝 Импорт из НЛ",
+        "nl_file_label": "Файл (txt, pdf, docx, fb2)",
+        "nl_open_text_btn": "📝 Открыть текст",
+        "nl_short_text_label": "Краткий текст",
+        "nl_btn_facts": "📊 Факты",
+        "nl_btn_query": "❓ Запрос",
+        "nl_btn_clear": "🗑️",
+        "nl_log_filtered": "🛡️ Логировать отфильтрованное",
+        "nl_status_ready": "Готов.",
+        "custom_conv_title": "⚙️ Пользовательский конвертер",
+        "t2p_path_placeholder": "Путь к .py-файлу",
+        "t2p_pick": "📂 Выбрать",
+        "t2p_load": "✅ Загрузить",
+        "t2p_reset": "↺ Встроенный",
+        "t2p_status_builtin": "Встроенный",
+        "t2p_status_unavailable": "Недоступен",
+        "t2p_reset_done": "↺ Сброшено",
+        "t2p_file_required":
+            "✗ Укажите путь к .py-файлу\n"
+            "Или установите встроенный: pip install \"nl2prolog[ru]\"",
+        "t2p_file_missing": "✗ Файл не найден: {path}",
+        "t2p_not_py": "✗ Ожидался .py-файл, получено: {path}",
+        "t2p_spec_failed":
+            "✗ Не удалось создать загрузчик для: {path}",
+        "t2p_import_failed":
+            "✗ Ошибка импорта {path}:\n{e}\n\n{tb}",
+        "t2p_no_class":
+            "✗ В модуле нет класса TextToProlog: {path}",
+        "t2p_no_method":
+            "✗ Класс TextToProlog не имеет ни parse(), ни convert(): {path}",
+        "t2p_no_init":
+            "✗ Класс TextToProlog не инициализируется без аргументов:\n{e}",
+        "t2p_loaded":
+            "✓ Загружен модуль: {path}\n"
+            "  класс: TextToProlog\n"
+            "  as sys.modules['{name}']",
+
+        "nl_banner_custom":
+            "✅ <b>Пользовательский экстрактор</b> подключён.<br>"
+            "NL-импорт работает через ваш .py-модуль.",
+        "nl_banner_pkg":
+            "✅ <b>nl2prolog {v}</b> — экстрактор по умолчанию.<br>"
+            "NL-импорт работает из коробки.",
+        "nl_banner_pkg_no_shim":
+            "⚠️ <b>nl2prolog {v}</b> установлен, "
+            "но shim <code>text_to_prolog</code> не загружается.<br>"
+            "Проверьте установку пакета, либо загрузите свой "
+            ".py-экстрактор в разделе «⚙️ Пользовательский конвертер» ниже.",
+        "nl_banner_local":
+            "✅ <b>Встроенный text_to_prolog</b> загружен "
+            "(пакет nl2prolog не обнаружен).<br>"
+            "NL-импорт работает через локальный модуль.",
+        "nl_banner_none":
+            "ℹ️ <b>Экстрактор NL не задан.</b><br>"
+            "Редактор графа работает полностью — можно открывать/сохранять "
+            "<code>.pl</code>, редактировать узлы/рёбра/атрибуты, "
+            "импортировать Prolog-код, строить запросы.<br>"
+            "NL-импорт (📥 Извлечь факты / запросы) недоступен.<br>"
+            "→ <b>Загрузите свой <code>.py</code>-экстрактор</b> в разделе "
+            "«⚙️ Пользовательский конвертер» ниже.<br>"
+            "→ <b>Или установите:</b> <code>pip install \"nl2prolog[ru]\"</code>",
+
+        "extractor_hint":
+            "ℹ️ Экстрактор NL не задан.\n\n"
+            "Редактор графа работает полностью — можно открывать/сохранять .pl, "
+            "редактировать узлы/рёбра/атрибуты, импортировать Prolog-код, "
+            "строить запросы.\n\n"
+            "Для NL-импорта нужно:\n"
+            "  → Загрузить свой .py-модуль с классом TextToProlog\n"
+            "    в разделе «⚙️ Пользовательский конвертер»\n"
+            "    (метод parse() или convert())\n"
+            "  → Или установить встроенный:\n"
+            "    pip install \"nl2prolog[ru]\"\n",
+
+        "imp_prolog_title": "📥 Импорт из Prolog",
+        "imp_prolog_placeholder": "% Вставьте Prolog-код",
+        "imp_prolog_btn": "📥 Разобрать",
+        "imp_prolog_ready": "Готов.",
+
+        "diag_title": "🔬 Диагностика",
+        "diag_show": "🔄 Показать",
+
+        "tab_nodes": "Узлы",
+        "tab_edges": "Рёбра",
+        "tab_attrs": "Атрибуты",
+        "tab_filtered": "🛡️ Отфильтровано",
+        "tab_dialog": "💬 Диалог",
+        "tab_source": "Prolog source",
+
+        "nodes_headers": ["id", "type", "degree"],
+        "nodes_id_placeholder": "id (apple)",
+        "nodes_type_placeholder": "type (org, person...)",
+        "nodes_edit_id_placeholder": "ID",
+        "nodes_edit_type_placeholder": "Type",
+        "nodes_add_btn": "➕",
+        "nodes_edit_btn": "💾",
+        "nodes_del_btn": "🗑️",
+        "nodes_click_hint": "✗ Кликните по строке в таблице",
+        "nodes_not_found": "✗ Узел не найден",
+        "nodes_already_exists": "✗ Узел '{id}' уже существует",
+        "nodes_rename_err": "✗ Ошибка переименования: {e}",
+        "nodes_edit_err": "✗ Ошибка: {e}",
+        "nodes_updated": "✓ Узел обновлён: {id}",
+        "nodes_deleted": "✓ Узел {id} удалён",
+
+        "edges_headers": ["idx", "source", "predicate", "target"],
+        "edges_src_placeholder": "source",
+        "edges_tgt_placeholder": "target",
+        "edges_pred_placeholder": "predicate",
+        "edges_edit_src_placeholder": "Source",
+        "edges_edit_tgt_placeholder": "Target",
+        "edges_edit_pred_placeholder": "Predicate",
+        "edges_add_btn": "➕",
+        "edges_edit_btn": "💾",
+        "edges_del_btn": "🗑️",
+        "edges_click_hint": "✗ Кликните по строке в таблице",
+        "edges_not_found": "✗ Ребро не найдено",
+        "edges_node_err": "✗ Ошибка добавления узла: {e}",
+        "edges_updated": "✓ Ребро обновлено: {s} -> {t}",
+        "edges_deleted": "✓ Ребро удалено",
+
+        "attrs_empty": "Нет атрибутов",
+        "attrs_ent_placeholder": "entity",
+        "attrs_name_placeholder": "name",
+        "attrs_value_placeholder": "value",
+        "attrs_add_btn": "➕",
+        "attrs_del_placeholder": "Удалить",
+        "attrs_del_btn": "🗑️",
+
+        "filtered_empty":
+            "Ничего не отфильтровано (или логирование выключено).\n"
+            "Включите «🛡️ Логировать отфильтрованное» в блоке импорта НЛ.",
+        "filtered_headers": ["терм / атом", "причина фильтрации"],
+
+        "dialog_help":
+            "Задайте вопрос или утверждение на естественном языке. "
+            "Вопрос → попытка найти ответ в графе. "
+            "Утверждение → извлечённые факты добавятся в граф. "
+            "Если ответ не найден — уточните (✅/❌) или введите новый текст.",
+        "dialog_not_started":
+            "Диалог не начат. Введите вопрос и нажмите «▶ Спросить».",
+        "dialog_pending_none":
+            "Нет ожидающего вопроса. Задайте новый вопрос или введите утверждение.",
+        "dialog_pending_label": "⏳ Ожидающий вопрос:",
+        "dialog_pending_prolog": "Prolog:",
+        "dialog_text_placeholder": "Например: У меня есть лицензия?",
+        "dialog_ask": "▶ Спросить",
+        "dialog_answer": "💬 Ответить",
+        "dialog_yes": "✅",
+        "dialog_no": "❌",
+        "dialog_reset": "🗑️",
+        "dialog_status_ready": "Готов к диалогу",
+        "dialog_transcript_head": "📜 Транскрипт",
+        "dialog_transcript_none": "(диалог не начат)",
+        "dialog_transcript_empty": "(пусто)",
+        "dialog_transcript_err": "(ошибка чтения транскрипта)",
+        "dialog_unavailable":
+            "⚠️ <b>Диалоговый режим недоступен.</b><br>"
+            "Модуль <code>dialog</code> не загружается — "
+            "нужен пакет <code>nl2prolog</code>.<br>"
+            "→ Установите: <code>pip install \"nl2prolog[ru]\"</code><br>"
+            "→ Пользовательский <code>.py</code>-экстрактор "
+            "для диалога недостаточен (нужен <code>DialogTurn</code> "
+            "из <code>nl2prolog</code>).<br>"
+            "→ Проверьте консоль на ошибки импорта <code>nl2prolog.dialog</code>.",
+        "dialog_empty_input": "✗ Пустой ввод",
+        "dialog_empty_answer": "✗ Пустой ответ",
+        "dialog_unavailable_short":
+            "✗ dialog.py недоступен. "
+            "Установите: pip install \"nl2prolog[ru]\"",
+        "dialog_init_failed":
+            "✗ Не удалось инициализировать диалог. "
+            "Проверьте, что установлен nl2prolog и задан экстрактор.",
+        "dialog_not_initialized":
+            "✗ Диалог не инициализирован. Сначала нажмите «▶ Спросить».",
+        "dialog_no_pending":
+            "ℹ️ Нет ожидающего вопроса. Сначала нажмите «▶ Спросить».",
+        "dialog_reset_ok":
+            "✓ Диалог сброшен (pending очищен, история сохранена)",
+        "dialog_unrecognized":
+            "\n⚠️ Вопрос не распознан парсером "
+            "(NL-экстрактор вернул пустой запрос). "
+            "Извлечены только факты из текста.\n"
+            "💡 Попробуйте переформулировать вопрос.",
+        "dialog_no_solution_hint":
+            "\n💡 Решение не найдено. Нажмите ✅ Да / ❌ Нет "
+            "или введите уточнение.",
+        "dialog_facts_added":
+            "\n✓ Факты добавлены: +{n} узлов, +{e} рёбер, +{a} атрибутов",
+        "dialog_facts_err": "\n✗ Ошибка добавления фактов: {e}",
+
+        "src_refresh_btn": "🔄 Обновить из графа",
+        "src_apply_btn": "📥 Применить",
+        "src_edit_accordion": "✏️ Редактировать",
+        "src_code_placeholder": "% Нажмите 🔄",
+        "src_preview_empty":
+            "Нажмите 🔄 «Обновить из графа» для сериализации",
+        "src_ready": "Готов.",
+        "src_parsed": "✓ Разобрано",
+
+        "query_placeholder": "edge(X, Y, owns).",
+        "query_run_btn": "▶ Запрос",
+        "query_help_btn": "ℹ️ Помощь",
+        "query_empty": "✗ Пустой запрос",
+        "query_engine_missing": "✗ Установите prolog",
+        "query_agent_err": "✗ Ошибка агента: {e}",
+        "query_no_solutions": "✗ Нет решений",
+        "query_true": "✓ true",
+        "query_none": "Нет решений",
+        "query_found": "✓ {n} решение(й)",
+        "query_help_text":
+            "Доступно: edge/2,3 node/2,3 attribute/3 findall/3 и т.д.",
+        "query_agent_not_loaded": "⚠️ PyAgentProlog не загружен",
+
+        "file_not_selected": "Файл не выбран",
+        "cancelled": "Отменено",
+        "cleared": "Очищено.",
+        "ready": "Готов.",
+        "paste_prolog": "% Вставьте Prolog-код",
+
+        "file_read_ok":
+            "✅ Файл загружен ({n} символов). "
+            "Нажмите «📝 Открыть текст», чтобы просмотреть и отредактировать.",
+        "file_read_err": "❌ Не удалось прочитать файл: {path}",
+        "file_apply_ok": "✅ Текст обновлён.",
+        "file_unsupported": "❌ Неподдерживаемый формат: {ext}",
+        "file_read_exception": "❌ Ошибка чтения файла: {e}",
+        "file_pdf_dep": "❌ Для чтения PDF установите: pip install PyPDF2",
+        "file_docx_dep":
+            "❌ Для чтения DOCX установите: pip install python-docx",
+
+        "proj_merged_ok":
+            "✓ Объединено: {path}\n"
+            "  +{an} узлов, +{ae} рёбер, +{aa} атрибутов\n"
+            "  пропущено (уже есть или невалидно): "
+            "{sn} узлов, {se} рёбер, {sa} атрибутов",
+        "proj_merged_nothing":
+            "ℹ️ Нечего добавлять: {path}\n"
+            "  Всё уже есть в графе ({sk} элементов пропущено).",
+        "proj_merged_empty": "ℹ️ Файл пуст: {path}",
+        "proj_merge_err": "✗ Ошибка объединения: {e}",
+        "proj_loaded": "✓ Загружено: {path}",
+        "proj_saved": "✓ Сохранено: {path}",
+        "proj_save_no_file": "✗ Не выбран файл",
+        "proj_new_ok": "✓ Проект: {path}",
+        "proj_example_ok": "✓ Демо-граф",
+
+        "dlg_ready": "Готов к диалогу",
+        "dlg_no_dialog": "(диалог не начат)",
+    },
+}
+
+
+def t(lang: str, key: str, **kwargs) -> str:
+    """Look up a translated string for the given language."""
+    table = TRANSLATIONS.get(lang) or TRANSLATIONS["en"]
+    value = table.get(key)
+    if value is None:
+        value = TRANSLATIONS["en"].get(key, key)
+    return value.format(**kwargs) if kwargs and isinstance(value, str) else value
+
+
+def _detect_system_lang() -> str:
+    """Detect system language (en/ru); overridable via env var."""
+    override = os.environ.get("KG_EDITOR_LANG", "").strip().lower()
+    if override in ("en", "ru"):
+        return override
+    try:
+        import locale
+        loc = (locale.getlocale()[0] or "").lower()
+        if loc.startswith("ru"):
+            return "ru"
+    except (ValueError, TypeError, AttributeError):
+        pass
+    for var in ("LANG", "LC_ALL", "LANGUAGE", "LC_MESSAGES"):
+        if os.environ.get(var, "").lower().startswith("ru"):
+            return "ru"
+    if _sys.platform == "win32":
+        try:
+            import ctypes
+            if (ctypes.windll.kernel32.GetUserDefaultUILanguage()
+                    & 0x3FF) == 0x19:
+                return "ru"
+        except Exception:
+            pass
+    return "en"
+
+
+# =====================================================================
+# Constants
 # =====================================================================
 _CONVENIENCE_RULES = """
-% --- convenience rules (добавлены редактором) ---
+% --- convenience rules (added by the editor) ---
 node(Id, Type) :- node(Id, _, Type).
 edge(S, T) :- edge(S, T, _).
 """
@@ -142,14 +752,14 @@ _SOLUTION_LIMIT = 1000
 
 
 # =====================================================================
-# Тема (GitHub-dark) + принудительный dark
+# Theme (GitHub-dark) + forced dark
 # =====================================================================
 def _make_theme() -> gr.themes.Base:
-    t = gr.themes.Base(
+    t_ = gr.themes.Base(
         primary_hue=gr.themes.colors.blue,
         neutral_hue=gr.themes.colors.slate,
     )
-    return t.set(
+    return t_.set(
         body_background_fill="#0b0d11",
         body_background_fill_dark="#0b0d11",
         body_text_color="#c7cbd1",
@@ -251,7 +861,7 @@ _DARK_FORCE_HEAD = """
         if (!wrap) return;
         var isFs = wrap.classList.toggle('graph-fullscreen');
         btn.innerHTML = isFs ? '✕' : '⛶';
-        btn.title = isFs ? 'Свернуть' : 'Развернуть на весь экран';
+        btn.title = isFs ? 'Collapse' : 'Expand to full screen';
         var iframe = wrap.querySelector('iframe');
         if (iframe && iframe.contentWindow) {
             setTimeout(function () {
@@ -276,7 +886,7 @@ _DARK_FORCE_HEAD = """
 
 
 # =====================================================================
-# CSS
+# CSS (unchanged)
 # =====================================================================
 _GLOBAL_CSS = """
 .gradio-container {
@@ -305,15 +915,13 @@ button.compact-btn:hover, .compact-btn button:hover {
 }
 
 /* =====================================================================
-   v5.12.1 — единая рамка у полей ввода (.compact-tb)
+   v5.12.1 — single border for text inputs (.compact-tb)
 
-   Gradio оборачивает <input>/<textarea> в .block/.form, у которых
-   тоже есть border от темы (block_border_color). Внутри input сам
-   имеет border → визуально два контура. Снимаем border/background/
-   shadow с обёртки, оставляем только на самом поле ввода.
+   Gradio wraps <input>/<textarea> in .block/.form that also gets a
+   border from the theme (block_border_color). Inside, the input itself
+   has a border → visually two outlines. We strip border/background/
+   shadow from the wrapper and keep only the input field visible.
    ===================================================================== */
-
-/* Снять рамку/фон/тень с обёртки (block, form, wrap) */
 .gradio-container .compact-tb,
 .gradio-container .compact-tb.block,
 .gradio-container .compact-tb .form,
@@ -323,8 +931,6 @@ button.compact-btn:hover, .compact-btn button:hover {
     box-shadow: none !important;
     padding: 0 !important;
 }
-
-/* Само поле ввода — единственный видимый контур */
 .gradio-container .compact-tb input,
 .gradio-container .compact-tb textarea {
     padding: 4px 8px !important;
@@ -345,7 +951,6 @@ button.compact-btn:hover, .compact-btn button:hover {
     outline: none !important;
 }
 
-/* Модальное окно редактирования текста — тот же принцип */
 .gradio-container .modal-textarea,
 .gradio-container .modal-textarea.block,
 .gradio-container .modal-textarea .form {
@@ -404,7 +1009,6 @@ button.compact-btn:hover, .compact-btn button:hover {
 .cm-editor .cm-content ::selection { background: #2a313d !important; }
 .cm-editor .cm-cursor { border-left-color: #79c0ff !important; }
 
-/* Единая рамка для Code-редакторов */
 .gradio-container .block:has(.cm-editor) {
     border: none !important;
     background: transparent !important;
@@ -431,7 +1035,6 @@ button.compact-btn:hover, .compact-btn button:hover {
     border-color: #2a313d !important;
 }
 
-/* Hover-эффект для строк Dataframe */
 .compact-table tr:hover td {
     background: #161a20 !important;
     cursor: pointer;
@@ -603,7 +1206,6 @@ pre.status-box {
     background: #161a20 !important;
 }
 
-/* Принудительный ряд для кнопок */
 .nowrap-row {
     flex-wrap: nowrap !important;
     gap: 4px !important;
@@ -618,17 +1220,18 @@ pre.status-box {
 
 
 # =====================================================================
-# Утилиты — базовые
+# Basic utilities
 # =====================================================================
 def _status_html(s: str) -> str:
     return f'<pre class="status-box">{_esc(str(s))}</pre>'
 
 
-def _nl_package_status_html(t2p_custom: bool = False) -> str:
-    """Баннер о состоянии экстрактора по умолчанию.
+def _nl_package_status_html(lang: str = "en",
+                            t2p_custom: bool = False) -> str:
+    """Banner describing the default extractor state.
 
-    t2p_custom=True — пользователь загрузил свой .py через UI.
-    Иначе определяется автоматически по флагам _T2P_OK и _NL2PROLOG_OK.
+    t2p_custom=True — the user loaded their own .py via the UI.
+    Otherwise determined automatically from _T2P_OK / _NL2PROLOG_OK.
     """
     base = (
         "padding:8px 10px;border-radius:4px;font-size:11px;"
@@ -639,51 +1242,31 @@ def _nl_package_status_html(t2p_custom: bool = False) -> str:
         return (
             f'<div style="{base}background:#0d1117;'
             f'border:1px solid #238636;color:#7ee787;">'
-            f'✅ <b>Пользовательский экстрактор</b> подключён.<br>'
-            f'NL-импорт работает через ваш .py-модуль.'
-            f'</div>'
+            f'{t(lang, "nl_banner_custom")}</div>'
         )
     if _T2P_OK and _NL2PROLOG_OK:
         return (
             f'<div style="{base}background:#0d1117;'
             f'border:1px solid #238636;color:#7ee787;">'
-            f'✅ <b>nl2prolog {_esc(_NL2PROLOG_VERSION)}</b> — '
-            f'экстрактор по умолчанию.<br>'
-            f'NL-импорт работает из коробки.'
-            f'</div>'
+            f'{t(lang, "nl_banner_pkg", v=_esc(_NL2PROLOG_VERSION))}</div>'
         )
     if _NL2PROLOG_OK and not _T2P_OK:
         return (
             f'<div style="{base}background:#161a20;'
             f'border:1px solid #f0883e;color:#f0883e;">'
-            f'⚠️ <b>nl2prolog {_esc(_NL2PROLOG_VERSION)}</b> установлен, '
-            f'но shim <code>text_to_prolog</code> не загружается.<br>'
-            f'Проверьте установку пакета, либо загрузите свой '
-            f'.py-экстрактор в разделе «⚙️ Пользовательский конвертер» ниже.'
+            f'{t(lang, "nl_banner_pkg_no_shim", v=_esc(_NL2PROLOG_VERSION))}'
             f'</div>'
         )
     if _T2P_OK and not _NL2PROLOG_OK:
-        # Локальный text_to_prolog.py без пакета — маловероятно, но возможно
         return (
             f'<div style="{base}background:#0d1117;'
             f'border:1px solid #238636;color:#7ee787;">'
-            f'✅ <b>Встроенный text_to_prolog</b> загружен '
-            f'(пакет nl2prolog не обнаружен).<br>'
-            f'NL-импорт работает через локальный модуль.'
-            f'</div>'
+            f'{t(lang, "nl_banner_local")}</div>'
         )
     return (
         f'<div style="{base}background:#161a20;'
         f'border:1px solid #f0883e;color:#f0883e;">'
-        f'ℹ️ <b>Экстрактор NL не задан.</b><br>'
-        f'Редактор графа работает полностью — можно открывать/сохранять '
-        f'<code>.pl</code>, редактировать узлы/рёбра/атрибуты, '
-        f'импортировать Prolog-код, строить запросы.<br>'
-        f'NL-импорт (📥 Извлечь факты / запросы) недоступен.<br>'
-        f'→ <b>Загрузите свой <code>.py</code>-экстрактор</b> в разделе '
-        f'«⚙️ Пользовательский конвертер» ниже.<br>'
-        f'→ <b>Или установите:</b> <code>pip install "nl2prolog[ru]"</code>'
-        f'</div>'
+        f'{t(lang, "nl_banner_none")}</div>'
     )
 
 
@@ -691,13 +1274,13 @@ def _safe(g) -> KnowledgeGraph:
     return g if isinstance(g, KnowledgeGraph) else KnowledgeGraph()
 
 
-def _stats_html(g: KnowledgeGraph) -> str:
+def _stats_html(g: KnowledgeGraph, lang: str = "en") -> str:
     s = g.summary()
     return (
         '<div class="proj-info">'
-        f'<b>Узлов:</b> {s["nodes"]} &nbsp; '
-        f'<b>Рёбер:</b> {s["edges"]} &nbsp; '
-        f'<b>Атрибутов:</b> {s["attributes"]}'
+        f'<b>{t(lang, "stats_nodes")}</b> {s["nodes"]} &nbsp; '
+        f'<b>{t(lang, "stats_edges")}</b> {s["edges"]} &nbsp; '
+        f'<b>{t(lang, "stats_attrs")}</b> {s["attributes"]}'
         '</div>'
     )
 
@@ -707,7 +1290,7 @@ def _graph_to_program(g: KnowledgeGraph) -> str:
 
 
 # =====================================================================
-# Данные для таблиц (списки списков с HTML)
+# Table data (lists of lists with HTML)
 # =====================================================================
 _NODE_TYPE_COLORS: Dict[str, str] = {
     "concept": "#58a6ff",
@@ -722,8 +1305,9 @@ _NODE_TYPE_COLORS: Dict[str, str] = {
     "default": "#8b949e",
 }
 
-def _node_type_color(t: str) -> str:
-    return _NODE_TYPE_COLORS.get((t or "").lower(), _NODE_TYPE_COLORS["default"])
+def _node_type_color(t_: str) -> str:
+    return _NODE_TYPE_COLORS.get((t_ or "").lower(),
+                                 _NODE_TYPE_COLORS["default"])
 
 
 def _nodes_data(g: KnowledgeGraph) -> List[List[str]]:
@@ -755,13 +1339,13 @@ def _edges_data(g: KnowledgeGraph) -> List[List[str]]:
                      if e.target in g.nodes else "#8b949e")
 
         src_html = (
-            f'<span style="background-color:{src_color}22; color:{src_color}; '
-            f'padding:2px 6px; border-radius:4px; '
+            f'<span style="background-color:{src_color}22; '
+            f'color:{src_color}; padding:2px 6px; border-radius:4px; '
             f'border:1px solid {src_color}66;">{e.source}</span>'
         )
         tgt_html = (
-            f'<span style="background-color:{tgt_color}22; color:{tgt_color}; '
-            f'padding:2px 6px; border-radius:4px; '
+            f'<span style="background-color:{tgt_color}22; '
+            f'color:{tgt_color}; padding:2px 6px; border-radius:4px; '
             f'border:1px solid {tgt_color}66;">{e.target}</span>'
         )
         pred_html = (
@@ -774,7 +1358,7 @@ def _edges_data(g: KnowledgeGraph) -> List[List[str]]:
 
 
 # =====================================================================
-# Цветные чипы (для HTML-таблиц атрибутов и фильтров)
+# Colored chips (for HTML tables of attributes and filters)
 # =====================================================================
 def _chip(label: str, color: str, mono: bool = False) -> str:
     font = ("ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
@@ -793,7 +1377,8 @@ def _empty_table_html(msg: str) -> str:
     return (
         '<div style="padding:16px;color:#6e7681;text-align:center;'
         'border:1px dashed #2a313d;border-radius:4px;font-size:12px;'
-        'font-family:ui-sans-serif,system-ui,sans-serif;">'
+        'font-family:ui-sans-serif,system-ui,sans-serif;'
+        'white-space:pre-wrap;">'
         f'{_esc(msg)}</div>'
     )
 
@@ -823,9 +1408,9 @@ def _table_wrap(headers: List[str], rows: List[str],
     )
 
 
-def _attrs_html(g: KnowledgeGraph) -> str:
+def _attrs_html(g: KnowledgeGraph, lang: str = "en") -> str:
     if not g.attributes:
-        return _empty_table_html("Нет атрибутов")
+        return _empty_table_html(t(lang, "attrs_empty"))
     rows: List[str] = []
     for i, a in enumerate(g.attributes):
         color = (_node_type_color(g.nodes[a.entity].type)
@@ -845,15 +1430,14 @@ def _attrs_html(g: KnowledgeGraph) -> str:
             f'= {_esc(a.value)}</td>'
             "</tr>"
         )
-    return _table_wrap(["idx", "entity", "name", "value"], rows,
+    headers = ["idx", "entity", "name", "value"]
+    return _table_wrap(headers, rows,
                        align=["right", "left", "left", "left"])
 
 
-def _filtered_html(items: List[Tuple[str, str]]) -> str:
+def _filtered_html(items: List[Tuple[str, str]], lang: str = "en") -> str:
     if not items:
-        return _empty_table_html(
-            "Ничего не отфильтровано (или логирование выключено).\n"
-            "Включите «🛡️ Логировать отфильтрованное» в блоке импорта НЛ.")
+        return _empty_table_html(t(lang, "filtered_empty"))
     rows: List[str] = []
     for atom, reason in items:
         rows.append(
@@ -868,12 +1452,12 @@ def _filtered_html(items: List[Tuple[str, str]]) -> str:
             f'{_esc(reason)}</td>'
             "</tr>"
         )
-    return _table_wrap(["терм / атом", "причина фильтрации"], rows,
+    return _table_wrap(t(lang, "filtered_headers"), rows,
                        align=["left", "left"])
 
 
 # =====================================================================
-# Подсветка Prolog
+# Prolog syntax highlighting
 # =====================================================================
 _PL_TOKEN_RE = re.compile(
     r"""
@@ -932,10 +1516,9 @@ def _prolog_syntax_html(src: str) -> str:
     return "".join(parts)
 
 
-def _prolog_code_html(src: str) -> str:
+def _prolog_code_html(src: str, lang: str = "en") -> str:
     if not src or not src.strip():
-        return _empty_table_html(
-            "Нажмите 🔄 «Обновить из графа» для сериализации")
+        return _empty_table_html(t(lang, "src_preview_empty"))
     return (
         '<pre style="margin:0;padding:8px 10px;background:#0b0d11;'
         'border:1px solid #2a313d;border-radius:4px;color:#c7cbd1;'
@@ -948,26 +1531,26 @@ def _prolog_code_html(src: str) -> str:
 
 
 # =====================================================================
-# Refresh — единый кортеж для всех таблиц
+# Refresh — uniform tuple for all tables
 # =====================================================================
-def _refresh(g: KnowledgeGraph):
+def _refresh(g: KnowledgeGraph, lang: str = "en"):
     return (
         g,
         _nodes_data(g),
         _edges_data(g),
-        _attrs_html(g),
-        _stats_html(g),
+        _attrs_html(g, lang),
+        _stats_html(g, lang),
         render_pyvis(g),
     )
 
 
-def _serialize_and_preview(g):
+def _serialize_and_preview(g, lang: str = "en"):
     src = g.to_prolog() if isinstance(g, KnowledgeGraph) else ""
-    return src, _prolog_code_html(src)
+    return src, _prolog_code_html(src, lang)
 
 
-# ---- Диалоги выбора файлов -------------------------------------------
-def _pick_file(initial: str = "", title: str = "Выберите файл",
+# ---- File pickers ----------------------------------------------------
+def _pick_file(initial: str = "", title: str = "Select file",
                save: bool = False,
                filetypes: Optional[List[Tuple[str, str]]] = None
                ) -> Optional[str]:
@@ -1006,7 +1589,8 @@ def _pick_file(initial: str = "", title: str = "Выберите файл",
         return None
 
 
-def _pick_folder(initial: str = "", title: str = "Папка проекта") -> Optional[str]:
+def _pick_folder(initial: str = "", title: str = "Project folder"
+                 ) -> Optional[str]:
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -1032,9 +1616,10 @@ def _pick_folder(initial: str = "", title: str = "Папка проекта") ->
 
 
 # =====================================================================
-# Извлечение текста из файлов
+# Text extraction from files
 # =====================================================================
-def extract_text_from_file(file_path: str) -> Optional[str]:
+def extract_text_from_file(file_path: str, lang: str = "en"
+                           ) -> Optional[str]:
     ext = Path(file_path).suffix.lower()
     try:
         if ext == '.txt':
@@ -1061,40 +1646,37 @@ def extract_text_from_file(file_path: str) -> Optional[str]:
                         if page.extract_text()
                     ])
             except ImportError:
-                return "❌ Для чтения PDF установите: pip install PyPDF2"
+                return t(lang, "file_pdf_dep")
         elif ext == '.docx':
             try:
                 import docx
                 doc = docx.Document(file_path)
                 return '\n'.join([p.text for p in doc.paragraphs])
             except ImportError:
-                return "❌ Для чтения DOCX установите: pip install python-docx"
+                return t(lang, "file_docx_dep")
         else:
-            return f"❌ Неподдерживаемый формат: {ext}"
+            return t(lang, "file_unsupported", ext=ext)
     except Exception as e:
-        return f"❌ Ошибка чтения файла: {e}"
+        return t(lang, "file_read_exception", e=e)
 
 
-def h_load_text_file(file):
+def h_load_text_file(file, lang: str = "en"):
     if file is None:
-        return ("", _status_html("Файл не выбран"),
+        return ("", _status_html(t(lang, "file_not_selected")),
                 gr.update(visible=False), gr.update(visible=False))
     path = file.name if hasattr(file, "name") else str(file)
-    text = extract_text_from_file(path)
+    text = extract_text_from_file(path, lang)
     if not text:
-        return ("", _status_html(f"❌ Не удалось прочитать файл: {path}"),
+        return ("", _status_html(t(lang, "file_read_err", path=path)),
                 gr.update(visible=False), gr.update(visible=False))
     if text.startswith("❌"):
         return ("", _status_html(text),
                 gr.update(visible=False), gr.update(visible=False))
     return (
         text,
-        _status_html(
-            f"✅ Файл загружен ({len(text)} символов). "
-            f"Нажмите «📝 Открыть текст», чтобы просмотреть и отредактировать."
-        ),
+        _status_html(t(lang, "file_read_ok", n=len(text))),
         gr.update(visible=True),
-        gr.update(visible=False)
+        gr.update(visible=False),
     )
 
 
@@ -1104,39 +1686,36 @@ def h_open_modal(state_text):
     return gr.update(visible=True), state_text
 
 
-def h_apply_modal(modal_text_val):
+def h_apply_modal(modal_text_val, lang: str = "en"):
     return (gr.update(visible=False), modal_text_val,
-            _status_html("✅ Текст обновлён."))
+            _status_html(t(lang, "file_apply_ok")))
 
 
-def h_clear_nl():
-    return ("", "", _status_html("Очищено."),
+def h_clear_nl(lang: str = "en"):
+    return ("", "", _status_html(t(lang, "cleared")),
             gr.update(visible=False), gr.update(visible=False))
 
 
 # =====================================================================
-# Загрузка пользовательского TextToProlog
+# Loading a custom TextToProlog
 # =====================================================================
 def _h_pick_t2p() -> str:
     p = _pick_file(
-        title="Выберите модуль text-to-prolog (.py)",
+        title="Select text-to-prolog module (.py)",
         filetypes=[("Python (*.py)", "*.py"), ("All files", "*.*")],
     )
     return p or ""
 
 
-def h_load_t2p_module(path: str):
+def h_load_t2p_module(path: str, lang: str = "en"):
     path = (path or "").strip()
     if not path:
-        return None, _status_html(
-            "✗ Укажите путь к .py-файлу\n"
-            "Или установите встроенный: pip install \"nl2prolog[ru]\""
-        )
+        return None, _status_html(t(lang, "t2p_file_required"))
     path = os.path.abspath(path)
     if not os.path.isfile(path):
-        return None, _status_html(f"✗ Файл не найден: {path}")
+        return None, _status_html(t(lang, "t2p_file_missing", path=path))
     if not path.endswith(".py"):
-        return None, _status_html(f"✗ Ожидался .py-файл, получено: {path}")
+        return None, _status_html(t(lang, "t2p_not_py", path=path))
 
     mod_dir = os.path.dirname(path)
     if mod_dir and mod_dir not in _sys.path:
@@ -1147,50 +1726,47 @@ def h_load_t2p_module(path: str):
         spec = importlib.util.spec_from_file_location(unique_name, path)
         if spec is None or spec.loader is None:
             return None, _status_html(
-                f"✗ Не удалось создать загрузчик для: {path}")
+                t(lang, "t2p_spec_failed", path=path))
         module = importlib.util.module_from_spec(spec)
         _sys.modules[unique_name] = module
         spec.loader.exec_module(module)
     except Exception as e:
         _sys.modules.pop(unique_name, None)
         return None, _status_html(
-            f"✗ Ошибка импорта {path}:\n{e}\n\n{traceback.format_exc()}")
+            t(lang, "t2p_import_failed", path=path, e=e,
+              tb=traceback.format_exc()))
 
     if not hasattr(module, "TextToProlog"):
         _sys.modules.pop(unique_name, None)
         return None, _status_html(
-            f"✗ В модуле нет класса TextToProlog: {path}")
+            t(lang, "t2p_no_class", path=path))
 
     cls = module.TextToProlog
     if not hasattr(cls, 'parse') and not hasattr(cls, 'convert'):
         _sys.modules.pop(unique_name, None)
         return None, _status_html(
-            f"✗ Класс TextToProlog не имеет ни parse(), ни convert(): {path}")
+            t(lang, "t2p_no_method", path=path))
 
     try:
         cls()
     except Exception as e:
         _sys.modules.pop(unique_name, None)
-        return None, _status_html(
-            f"✗ Класс TextToProlog не инициализируется без аргументов:\n{e}")
+        return None, _status_html(t(lang, "t2p_no_init", e=e))
 
     return cls, _status_html(
-        f"✓ Загружен модуль: {path}\n"
-        f"  класс: TextToProlog\n"
-        f"  as sys.modules['{unique_name}']"
-    )
+        t(lang, "t2p_loaded", path=path, name=unique_name))
 
 
 # =====================================================================
-# Handlers — CRUD и выбор
+# Handlers — CRUD and selection
 # =====================================================================
-def h_add_node(g, nid, ntype):
+def h_add_node(g, nid, ntype, lang: str = "en"):
     g = _safe(g)
     try:
         g.add_node(nid, ntype or "concept")
-        return (*_refresh(g), "", "")
+        return (*_refresh(g, lang), "", "")
     except Exception as e:
-        return (*_refresh(g), "", f"✗ {e}")
+        return (*_refresh(g, lang), "", f"✗ {e}")
 
 
 def h_select_node(evt: gr.SelectData, g):
@@ -1203,27 +1779,29 @@ def h_select_node(evt: gr.SelectData, g):
     return "", "", ""
 
 
-def h_edit_node(g, old_id, new_id, new_type):
+def h_edit_node(g, old_id, new_id, new_type, lang: str = "en"):
     g = _safe(g)
     if not old_id:
-        return (*_refresh(g), "✗ Кликните по строке в таблице")
+        return (*_refresh(g, lang), t(lang, "nodes_click_hint"))
     if old_id not in g.nodes:
-        return (*_refresh(g), "✗ Узел не найден")
+        return (*_refresh(g, lang), t(lang, "nodes_not_found"))
 
     old_node = g.nodes[old_id]
     final_id = new_id.strip() if new_id and new_id.strip() else old_id
-    final_type = new_type.strip() if new_type and new_type.strip() \
-        else old_node.type
+    final_type = (new_type.strip()
+                  if new_type and new_type.strip() else old_node.type)
 
     if final_id != old_id:
         if final_id in g.nodes:
-            return (*_refresh(g), f"✗ Узел '{final_id}' уже существует")
+            return (*_refresh(g, lang),
+                    t(lang, "nodes_already_exists", id=final_id))
 
         props = old_node.props
         try:
             g.add_node(final_id, final_type, props)
         except Exception as e:
-            return (*_refresh(g), f"✗ Ошибка переименования: {e}")
+            return (*_refresh(g, lang),
+                    t(lang, "nodes_rename_err", e=e))
 
         for e in g.edges:
             if e.source == old_id:
@@ -1240,27 +1818,28 @@ def h_edit_node(g, old_id, new_id, new_type):
         try:
             g.add_node(old_id, final_type)
         except Exception as e:
-            return (*_refresh(g), f"✗ Ошибка: {e}")
+            return (*_refresh(g, lang), t(lang, "nodes_edit_err", e=e))
 
-    return (*_refresh(g), f"✓ Узел обновлён: {final_id}")
+    return (*_refresh(g, lang), t(lang, "nodes_updated", id=final_id))
 
 
-def h_del_node_selected(g, selected_id):
+def h_del_node_selected(g, selected_id, lang: str = "en"):
     g = _safe(g)
     if not selected_id:
-        return (*_refresh(g), "✗ Кликните по строке в таблице")
+        return (*_refresh(g, lang), t(lang, "nodes_click_hint"))
     if g.remove_node(selected_id):
-        return (*_refresh(g), f"✓ Узел {selected_id} удалён")
-    return (*_refresh(g), "✗ Узел не найден")
+        return (*_refresh(g, lang),
+                t(lang, "nodes_deleted", id=selected_id))
+    return (*_refresh(g, lang), t(lang, "nodes_not_found"))
 
 
-def h_add_edge(g, src, tgt, pred):
+def h_add_edge(g, src, tgt, pred, lang: str = "en"):
     g = _safe(g)
     try:
         g.add_edge(src, tgt, pred)
-        return (*_refresh(g), "", "", "")
+        return (*_refresh(g, lang), "", "", "")
     except Exception as e:
-        return (*_refresh(g), "", "", f"✗ {e}")
+        return (*_refresh(g, lang), "", "", f"✗ {e}")
 
 
 def h_select_edge(evt: gr.SelectData, g):
@@ -1272,22 +1851,23 @@ def h_select_edge(evt: gr.SelectData, g):
     return "", "", "", ""
 
 
-def h_edit_edge(g, idx_str, new_src, new_tgt, new_pred):
+def h_edit_edge(g, idx_str, new_src, new_tgt, new_pred, lang: str = "en"):
     g = _safe(g)
     if not idx_str:
-        return (*_refresh(g), "✗ Кликните по строке в таблице")
+        return (*_refresh(g, lang), t(lang, "edges_click_hint"))
     try:
         idx = int(idx_str)
         if not (0 <= idx < len(g.edges)):
-            return (*_refresh(g), "✗ Ребро не найдено")
+            return (*_refresh(g, lang), t(lang, "edges_not_found"))
 
         old_edge = g.edges[idx]
-        final_src = new_src.strip() if new_src and new_src.strip() \
-            else old_edge.source
-        final_tgt = new_tgt.strip() if new_tgt and new_tgt.strip() \
-            else old_edge.target
-        final_pred = new_pred.strip() if new_pred and new_pred.strip() \
-            else old_edge.predicate
+        final_src = (new_src.strip()
+                     if new_src and new_src.strip() else old_edge.source)
+        final_tgt = (new_tgt.strip()
+                     if new_tgt and new_tgt.strip() else old_edge.target)
+        final_pred = (new_pred.strip()
+                      if new_pred and new_pred.strip()
+                      else old_edge.predicate)
 
         try:
             if final_src not in g.nodes:
@@ -1295,80 +1875,74 @@ def h_edit_edge(g, idx_str, new_src, new_tgt, new_pred):
             if final_tgt not in g.nodes:
                 g.add_node(final_tgt)
         except Exception as e:
-            return (*_refresh(g), f"✗ Ошибка добавления узла: {e}")
+            return (*_refresh(g, lang),
+                    t(lang, "edges_node_err", e=e))
 
         old_edge.source = final_src
         old_edge.target = final_tgt
         old_edge.predicate = final_pred
 
-        return (*_refresh(g),
-                f"✓ Ребро обновлено: {final_src} -> {final_tgt}")
+        return (*_refresh(g, lang),
+                t(lang, "edges_updated", s=final_src, t_=final_tgt)
+                if False else
+                t(lang, "edges_updated", s=final_src, t=final_tgt))
     except Exception as e:
-        return (*_refresh(g), f"✗ {e}")
+        return (*_refresh(g, lang), f"✗ {e}")
 
 
-def h_del_edge_selected(g, idx_str):
+def h_del_edge_selected(g, idx_str, lang: str = "en"):
     g = _safe(g)
     if not idx_str:
-        return (*_refresh(g), "✗ Кликните по строке в таблице")
+        return (*_refresh(g, lang), t(lang, "edges_click_hint"))
     try:
         idx = int(idx_str)
         if g.remove_edge(idx):
-            return (*_refresh(g), "✓ Ребро удалено")
+            return (*_refresh(g, lang), t(lang, "edges_deleted"))
     except Exception:
         pass
-    return (*_refresh(g), "✗ Ребро не найдено")
+    return (*_refresh(g, lang), t(lang, "edges_not_found"))
 
 
-def h_add_attr(g, ent, name, value):
+def h_add_attr(g, ent, name, value, lang: str = "en"):
     g = _safe(g)
     try:
         g.add_attribute(ent, name, value)
-        return (*_refresh(g), "", "", "")
+        return (*_refresh(g, lang), "", "", "")
     except Exception as e:
-        return (*_refresh(g), "", "", f"✗ {e}")
+        return (*_refresh(g, lang), "", "", f"✗ {e}")
 
 
-def h_del_attr(g, idx_str):
+def h_del_attr(g, idx_str, lang: str = "en"):
     g = _safe(g)
     if idx_str is None:
-        return _refresh(g)
+        return _refresh(g, lang)
     try:
         g.remove_attribute(int(idx_str))
     except Exception:
         pass
-    return _refresh(g)
+    return _refresh(g, lang)
 
 
 # =====================================================================
-# Handlers — импорт
+# Handlers — import
 # =====================================================================
-def _extractor_hint_html() -> str:
-    """Подсказка для хендлеров импорта, когда экстрактор не задан."""
-    return (
-        "ℹ️ Экстрактор NL не задан.\n\n"
-        "Редактор графа работает полностью — можно открывать/сохранять .pl, "
-        "редактировать узлы/рёбра/атрибуты, импортировать Prolog-код, "
-        "строить запросы.\n\n"
-        "Для NL-импорта нужно:\n"
-        "  → Загрузить свой .py-модуль с классом TextToProlog\n"
-        "    в разделе «⚙️ Пользовательский конвертер»\n"
-        "    (метод parse() или convert())\n"
-        "  → Или установить встроенный:\n"
-        "    pip install \"nl2prolog[ru]\"\n"
-    )
+def _extractor_hint_html(lang: str = "en") -> str:
+    """Hint for import handlers when the extractor is not set."""
+    return t(lang, "extractor_hint")
 
 
 def h_import_full_graph(g, short_text, full_text, t2p_cls=None,
-                        log_filtered=False):
+                        log_filtered=False, lang: str = "en"):
     g = _safe(g)
     cls = t2p_cls if t2p_cls is not None \
         else (TextToProlog if _T2P_OK else None)
     if cls is None:
-        return _status_html(_extractor_hint_html()), g, _filtered_html([])
+        return (_status_html(_extractor_hint_html(lang)), g,
+                _filtered_html([], lang))
     text = (full_text or "").strip() or (short_text or "").strip()
     if not text:
-        return _status_html("✗ Пустой текст"), g, _filtered_html([])
+        return _status_html("✗ " + t(lang, "empty_query")), g, \
+               _filtered_html([], lang)
 
     try:
         t2p = cls()
@@ -1396,22 +1970,22 @@ def h_import_full_graph(g, short_text, full_text, t2p_cls=None,
         for a in new_g.attributes:
             g.add_attribute(a.entity, a.name, a.value)
 
-        msg = (f"✓ Факты: +{len(new_g.nodes)} узлов, "
-               f"+{len(new_g.edges)} рёбер, "
-               f"+{len(new_g.attributes)} атрибутов")
-        return _status_html(msg), g, _filtered_html(filtered_items)
+        msg = (f"✓ Facts: +{len(new_g.nodes)} nodes, "
+               f"+{len(new_g.edges)} edges, "
+               f"+{len(new_g.attributes)} attributes")
+        return (_status_html(msg), g, _filtered_html(filtered_items, lang))
     except Exception as e:
-        return _status_html(f"✗ {e}"), g, _filtered_html([])
+        return _status_html(f"✗ {e}"), g, _filtered_html([], lang)
 
 
-def h_extract_query(short_text, full_text, t2p_cls=None):
+def h_extract_query(short_text, full_text, t2p_cls=None, lang: str = "en"):
     cls = t2p_cls if t2p_cls is not None \
         else (TextToProlog if _T2P_OK else None)
     if cls is None:
-        return "", _status_html(_extractor_hint_html())
+        return "", _status_html(_extractor_hint_html(lang))
     text = (full_text or "").strip() or (short_text or "").strip()
     if not text:
-        return "", _status_html("✗ Пустой текст")
+        return "", _status_html("✗ " + t(lang, "empty_query"))
 
     try:
         t2p = cls()
@@ -1422,30 +1996,31 @@ def h_extract_query(short_text, full_text, t2p_cls=None):
             _, query_src = t2p.parse(text, strict=True)
 
         if not query_src:
-            return "", _status_html("ℹ️ Вопросов не найдено.")
+            return "", _status_html("ℹ️ No questions found.")
         return (query_src,
-                _status_html(f"✓ Извлечён запрос:\n{query_src[:100]}..."))
+                _status_html(f"✓ Query extracted:\n{query_src[:100]}..."))
     except Exception as e:
         return "", _status_html(f"✗ {e}")
 
 
-def h_parse_source(g, code):
+def h_parse_source(g, code, lang: str = "en"):
     try:
         new_g = KnowledgeGraph.from_prolog(code or "")
-        return _refresh(new_g)[0], _status_html("✓ Разобрано")
+        return _refresh(new_g, lang)[0], _status_html(t(lang, "src_parsed"))
     except Exception as e:
         return g, _status_html(f"✗ {e}")
 
 
-def h_merge_file(g):
-    """Объединить текущий граф с графом из файла (аддитивно)."""
+def h_merge_file(g, lang: str = "en"):
+    """Merge the current graph with the graph from a file (additive)."""
     g = _safe(g)
     p = _pick_file(
-        title="Объединить с графом (.pl)",
+        title="Merge with graph (.pl)",
         filetypes=[("Prolog (*.pl)", "*.pl"), ("All files", "*.*")],
     )
     if not p:
-        return _refresh(g) + (_status_html("Файл не выбран"),)
+        return _refresh(g, lang) + (
+            _status_html(t(lang, "file_not_selected")),)
     try:
         with open(p, encoding="utf-8") as f:
             content = f.read()
@@ -1459,58 +2034,56 @@ def h_merge_file(g):
                    + stats["skipped_attributes"])
 
         if added == 0 and skipped == 0:
-            msg = f"ℹ️ Файл пуст: {p}"
+            msg = t(lang, "proj_merged_empty", path=p)
         elif added == 0:
-            msg = (
-                f"ℹ️ Нечего добавлять: {p}\n"
-                f"  Всё уже есть в графе "
-                f"({skipped} элементов пропущено)."
-            )
+            msg = t(lang, "proj_merged_nothing", path=p, sk=skipped)
         else:
-            msg = (
-                f"✓ Объединено: {p}\n"
-                f"  +{stats['added_nodes']} узлов, "
-                f"+{stats['added_edges']} рёбер, "
-                f"+{stats['added_attributes']} атрибутов\n"
-                f"  пропущено (уже есть или невалидно): "
-                f"{stats['skipped_nodes']} узлов, "
-                f"{stats['skipped_edges']} рёбер, "
-                f"{stats['skipped_attributes']} атрибутов"
-            )
-        return _refresh(g) + (_status_html(msg),)
+            msg = t(lang, "proj_merged_ok",
+                    path=p,
+                    an=stats['added_nodes'],
+                    ae=stats['added_edges'],
+                    aa=stats['added_attributes'],
+                    sn=stats['skipped_nodes'],
+                    se=stats['skipped_edges'],
+                    sa=stats['skipped_attributes'])
+        return _refresh(g, lang) + (_status_html(msg),)
     except Exception as e:
-        return _refresh(g) + (_status_html(f"✗ Ошибка объединения: {e}"),)
+        return _refresh(g, lang) + (
+            _status_html(t(lang, "proj_merge_err", e=e)),)
 
 
-def h_open_file(g):
-    p = _pick_file(title="Открыть .pl графа")
+def h_open_file(g, lang: str = "en"):
+    p = _pick_file(title="Open graph .pl")
     if not p:
-        return _refresh(_safe(g)) + (_status_html("Файл не выбран"),)
+        return _refresh(_safe(g), lang) + (
+            _status_html(t(lang, "file_not_selected")),)
     try:
         with open(p, encoding="utf-8") as f:
             new_g = KnowledgeGraph.from_prolog(f.read())
-        return _refresh(new_g) + (_status_html(f"✓ Загружено: {p}"),)
+        return _refresh(new_g, lang) + (
+            _status_html(t(lang, "proj_loaded", path=p)),)
     except Exception as e:
-        return _refresh(_safe(g)) + (_status_html(f"✗ {e}"),)
+        return _refresh(_safe(g), lang) + (_status_html(f"✗ {e}"),)
 
 
-def h_save_file(g, current_path):
+def h_save_file(g, current_path, lang: str = "en"):
     g = _safe(g)
-    p = current_path or _pick_file(title="Сохранить как...", save=True)
+    p = current_path or _pick_file(title="Save as...", save=True)
     if not p:
-        return _status_html("✗ Не выбран файл"), current_path
+        return _status_html(t(lang, "proj_save_no_file")), current_path
     try:
         with open(p, "w", encoding="utf-8") as f:
             f.write(g.to_prolog())
-        return _status_html(f"✓ Сохранено: {p}"), p
+        return _status_html(t(lang, "proj_saved", path=p)), p
     except Exception as e:
         return _status_html(f"✗ {e}"), current_path
 
 
-def h_new_project(g):
-    p = _pick_folder(title="Папка нового проекта")
+def h_new_project(g, lang: str = "en"):
+    p = _pick_folder(title="New project folder")
     if not p:
-        return _refresh(_safe(g)) + (_status_html("Отменено"),)
+        return _refresh(_safe(g), lang) + (
+            _status_html(t(lang, "cancelled")),)
     try:
         os.makedirs(p, exist_ok=True)
         kb = os.path.join(p, "graph.pl")
@@ -1519,12 +2092,13 @@ def h_new_project(g):
                 f.write("% Graph\n")
         new_g = KnowledgeGraph.from_prolog(
             open(kb, encoding="utf-8").read())
-        return _refresh(new_g) + (_status_html(f"✓ Проект: {p}"),)
+        return _refresh(new_g, lang) + (
+            _status_html(t(lang, "proj_new_ok", path=p)),)
     except Exception as e:
-        return _refresh(_safe(g)) + (_status_html(f"✗ {e}"),)
+        return _refresh(_safe(g), lang) + (_status_html(f"✗ {e}"),)
 
 
-def h_load_example(g):
+def h_load_example(g, lang: str = "en"):
     demo = KnowledgeGraph()
     demo.add_node("apple", "org")
     demo.add_node("iphone", "thing")
@@ -1536,27 +2110,28 @@ def h_load_example(g):
     demo.add_edge("elon_musk", "spacex", "owns")
     demo.add_attribute("iphone", "release_year", "2022")
     demo.add_attribute("spacex", "industry", "aerospace")
-    return _refresh(demo) + (_status_html("✓ Демо-граф"),)
+    return _refresh(demo, lang) + (
+        _status_html(t(lang, "proj_example_ok")),)
 
 
 # =====================================================================
-# Запросы
+# Queries
 # =====================================================================
-def h_query(g, text):
+def h_query(g, text, lang: str = "en"):
     g = _safe(g)
     text = (text or "").strip()
     if not text:
-        return {"result": None}, "✗ Пустой запрос"
+        return {"result": None}, t(lang, "query_empty")
     if not _AGENT_OK:
-        return ({"error": "PyAgentProlog недоступен"},
-                "✗ Установите prolog")
+        return ({"error": "PyAgentProlog unavailable"},
+                t(lang, "query_engine_missing"))
 
     q = text if text.endswith(".") else text + "."
     try:
         src = _graph_to_program(g)
         agent = Agent(src, context={})
     except Exception as e:
-        return {"error": str(e)}, f"✗ Ошибка агента: {e}"
+        return {"error": str(e)}, t(lang, "query_agent_err", e=e)
 
     sols, truncated = [], False
     try:
@@ -1564,9 +2139,9 @@ def h_query(g, text):
             if isinstance(item, dict) and 'error' in item:
                 return {"error": item['error']}, f"✗ {item['error']}"
             if item is False:
-                return {"result": False}, "✗ Нет решений"
+                return {"result": False}, t(lang, "query_no_solutions")
             if item is True:
-                return {"result": True}, "✓ true"
+                return {"result": True}, t(lang, "query_true")
             if isinstance(item, dict):
                 sols.append(item)
             if len(sols) >= _SOLUTION_LIMIT:
@@ -1576,33 +2151,25 @@ def h_query(g, text):
         return {"error": str(e)}, f"✗ {e}"
 
     if not sols:
-        return {"result": None}, "Нет решений"
-    return sols, f"✓ {len(sols)} решение(й)"
+        return {"result": None}, t(lang, "query_none")
+    return sols, t(lang, "query_found", n=len(sols))
 
 
 # =====================================================================
 # Dialog helpers
 # =====================================================================
-def _dialog_unavailable_banner() -> str:
+def _dialog_unavailable_banner(lang: str = "en") -> str:
     return (
         '<div style="padding:8px 10px;background:#161a20;'
         'border:1px solid #f0883e;color:#f0883e;border-radius:4px;'
         'font-size:11px;line-height:1.55;'
         'font-family:ui-sans-serif,system-ui,sans-serif;">'
-        '⚠️ <b>Диалоговый режим недоступен.</b><br>'
-        'Модуль <code>dialog</code> не загружается — '
-        'нужен пакет <code>nl2prolog</code>.<br>'
-        '→ Установите: <code>pip install "nl2prolog[ru]"</code><br>'
-        '→ Пользовательский <code>.py</code>-экстрактор '
-        'для диалога недостаточен (нужен <code>DialogTurn</code> '
-        'из <code>nl2prolog</code>).<br>'
-        '→ Проверьте консоль на ошибки импорта <code>nl2prolog.dialog</code>.'
-        '</div>'
+        f'{t(lang, "dialog_unavailable")}</div>'
     )
 
 
 def _dialog_init(t2p_cls):
-    """Создать DialogTurn или None. Требует _DIALOG_OK и экстрактор."""
+    """Create DialogTurn or None. Requires _DIALOG_OK and an extractor."""
     if not _DIALOG_OK or DialogTurn is None:
         return None
     cls = t2p_cls if t2p_cls is not None \
@@ -1617,50 +2184,46 @@ def _dialog_init(t2p_cls):
         return None
 
 
-def _dialog_transcript_str(dlg_state) -> str:
+def _dialog_transcript_str(dlg_state, lang: str = "en") -> str:
     if dlg_state is None:
-        return "(диалог не начат)"
+        return t(lang, "dialog_transcript_none")
     try:
-        t = dlg_state.transcript(n=20)
-        return t if t else "(пусто)"
+        txt = dlg_state.transcript(n=20)
+        return txt if txt else t(lang, "dialog_transcript_empty")
     except Exception:
-        return "(ошибка чтения транскрипта)"
+        return t(lang, "dialog_transcript_err")
 
 
-def _dialog_pending_html(dlg_state) -> str:
+def _dialog_pending_html(dlg_state, lang: str = "en") -> str:
     if dlg_state is None:
-        return _empty_table_html(
-            "Диалог не начат. Введите вопрос и нажмите «▶ Спросить»."
-        )
+        return _empty_table_html(t(lang, "dialog_not_started"))
     pq = getattr(dlg_state, 'pending_query', '')
     pt = getattr(dlg_state, 'pending_question_text', '')
     if not pq:
-        return _empty_table_html(
-            "Нет ожидающего вопроса. Задайте новый вопрос "
-            "или введите утверждение."
-        )
+        return _empty_table_html(t(lang, "dialog_pending_none"))
     return (
         '<div style="padding:8px 10px;background:#161a20;'
         'border:1px solid #58a6ff;border-radius:4px;'
         'font-size:12px;font-family:ui-monospace,monospace;'
         'line-height:1.55;">'
-        '<b style="color:#79c0ff;">⏳ Ожидающий вопрос:</b> '
+        f'<b style="color:#79c0ff;">{t(lang, "dialog_pending_label")}</b> '
         f'<span style="color:#c7cbd1;">{_esc(pt)}</span><br>'
-        f'<b style="color:#8b949e;">Prolog:</b> '
+        f'<b style="color:#8b949e;">{t(lang, "dialog_pending_prolog")}</b> '
         f'<code style="color:#ffa657;">{_esc(pq)}</code>'
         '</div>'
     )
 
+
 def _apply_facts_local(g, facts_src: str) -> Dict[str, Any]:
-    """Применить Prolog-факты к графу через ЛОКАЛЬНЫЙ KnowledgeGraph.
+    """Apply Prolog facts to the graph through the LOCAL KnowledgeGraph.
 
-    Не использует apply_facts_to_graph из nl2prolog.dialog — тот
-    пытается импортировать KnowledgeGraph из своего пакета и падает
-    с 'NoneType' object has no attribute 'from_prolog'.
+    Does not use apply_facts_to_graph from nl2prolog.dialog — that one
+    tries to import KnowledgeGraph from its own package and fails
+    with 'NoneType' object has no attribute 'from_prolog'.
 
-    Возвращает dict: {nodes, edges, attributes} или {error: str}.
-    Неизвестные предикаты (user_condition/1, true_condition/1, …)
-    молча игнорируются — так же, как в старом dialog.apply_facts_to_graph.
+    Returns dict: {nodes, edges, attributes} or {error: str}.
+    Unknown predicates (user_condition/1, true_condition/1, …) are
+    silently ignored — same as in the old dialog.apply_facts_to_graph.
     """
     if not facts_src or not facts_src.strip():
         return {"nodes": 0, "edges": 0, "attributes": 0}
@@ -1683,51 +2246,49 @@ def _apply_facts_local(g, facts_src: str) -> Dict[str, Any]:
         "attributes": len(new_g.attributes),
     }
 
-def _dialog_apply_facts(g, facts: str, status: str) -> str:
+
+def _dialog_apply_facts(g, facts: str, status: str,
+                        lang: str = "en") -> str:
     if not facts or apply_facts_to_graph is None:
         return status
     try:
         _, summary = apply_facts_to_graph(g, facts)
     except Exception as ex:
-        return status + f"\n✗ Ошибка добавления фактов: {ex}"
+        return status + t(lang, "dialog_facts_err", e=ex)
 
     if isinstance(summary, dict) and "error" in summary:
-        return status + f"\n✗ Ошибка добавления фактов: {summary['error']}"
+        return status + t(lang, "dialog_facts_err",
+                           e=summary['error'])
 
     n = (summary or {}).get("nodes", 0)
     e = (summary or {}).get("edges", 0)
     a = (summary or {}).get("attributes", 0)
     if n or e or a:
-        return (status +
-                f"\n✓ Факты добавлены: +{n} узлов, "
-                f"+{e} рёбер, +{a} атрибутов")
+        return status + t(lang, "dialog_facts_added", n=n, e=e, a=a)
     return status
 
 
-
-def _dialog_hint_for_no_solution(result, dlg_state) -> str:
-    """Подсказка, если pending есть, а решения нет."""
+def _dialog_hint_for_no_solution(result, dlg_state,
+                                 lang: str = "en") -> str:
+    """Hint if a pending question exists but no solution is found."""
     if not isinstance(result, dict):
         return ""
     if not getattr(dlg_state, 'pending_query', ''):
         return ""
 
-    # Явное «нет решения»: ключ "result" присутствует и равен False / None.
-    # НЕ путать с успехом: при успехе ключа "result" нет вовсе, а есть
-    # непустой "solutions" — тогда .get("result") тоже вернёт None,
-    # и раньше это ложно срабатывало (v5.13.0 bug).
+    # Explicit "no solution": key "result" present and False / None.
+    # Do not confuse with success: on success there is no "result" key,
+    # only a non-empty "solutions" — then .get("result") would also be
+    # None, and this used to trigger falsely (v5.13.0 bug).
     if "result" in result and result["result"] is False:
-        return ("\n💡 Решение не найдено. Нажмите ✅ Да / ❌ Нет "
-                "или введите уточнение.")
+        return t(lang, "dialog_no_solution_hint")
     if "result" in result and result["result"] is None:
-        return ("\n💡 Решение не найдено. Нажмите ✅ Да / ❌ Нет "
-                "или введите уточнение.")
+        return t(lang, "dialog_no_solution_hint")
 
-    # Fallback: solutions — пустой список (не должно случаться, но на всякий)
+    # Fallback: solutions is an empty list (should not happen, but safe)
     sols = result.get("solutions")
     if isinstance(sols, list) and len(sols) == 0:
-        return ("\n💡 Решение не найдено. Нажмите ✅ Да / ❌ Нет "
-                "или введите уточнение.")
+        return t(lang, "dialog_no_solution_hint")
 
     return ""
 
@@ -1735,140 +2296,127 @@ def _dialog_hint_for_no_solution(result, dlg_state) -> str:
 # =====================================================================
 # Dialog handlers
 # =====================================================================
-def h_dialog_ask(g, text, t2p_cls, dlg_state):
-    """NL-вопрос / утверждение через DialogTurn.ask()."""
+def h_dialog_ask(g, text, t2p_cls, dlg_state, lang: str = "en"):
+    """NL question / statement through DialogTurn.ask()."""
     g = _safe(g)
     text = (text or "").strip()
-    cur_t = _dialog_transcript_str(dlg_state)
-    cur_p = _dialog_pending_html(dlg_state)
+    cur_t = _dialog_transcript_str(dlg_state, lang)
+    cur_p = _dialog_pending_html(dlg_state, lang)
 
     if not text:
         return (g, dlg_state, {},
-                _status_html("✗ Пустой ввод"), cur_t, cur_p)
+                _status_html(t(lang, "dialog_empty_input")), cur_t, cur_p)
 
     if not _DIALOG_OK:
-        return (g, dlg_state, {"error": "dialog недоступен"},
-                _status_html(
-                    "✗ dialog.py недоступен. "
-                    "Установите: pip install \"nl2prolog[ru]\""
-                ), cur_t, cur_p)
+        return (g, dlg_state, {"error": "dialog unavailable"},
+                _status_html(t(lang, "dialog_unavailable_short")),
+                cur_t, cur_p)
 
     if dlg_state is None:
         dlg_state = _dialog_init(t2p_cls)
         if dlg_state is None:
-            return (g, dlg_state, {"error": "не инициализируется"},
-                    _status_html(
-                        "✗ Не удалось инициализировать диалог. "
-                        "Проверьте, что установлен nl2prolog "
-                        "и задан экстрактор."
-                    ), cur_t, cur_p)
+            return (g, dlg_state, {"error": "cannot init"},
+                    _status_html(t(lang, "dialog_init_failed")),
+                    cur_t, cur_p)
 
     try:
         result, status = dlg_state.ask(g, text)
     except Exception as e:
         return (g, dlg_state, {"error": str(e)},
                 _status_html(f"✗ {e}"),
-                _dialog_transcript_str(dlg_state),
-                _dialog_pending_html(dlg_state))
+                _dialog_transcript_str(dlg_state, lang),
+                _dialog_pending_html(dlg_state, lang))
 
-    # Не вопрос — применяем извлечённые факты к графу
+    # Not a question — apply extracted facts to the graph
     if isinstance(result, dict) and result.get("is_question") is False:
         facts = result.get("facts_extracted", "")
-        status = _dialog_apply_facts(g, facts, status)
-        # Парсер не извлёк запрос из вопроса — предупреждаем
+        status = _dialog_apply_facts(g, facts, status, lang)
+        # The parser returned an empty query from the question — warn
         if text.strip().endswith("?") and not (
             isinstance(result.get("solutions"), list)
             and result["solutions"]
         ):
-            status += (
-                "\n⚠️ Вопрос не распознан парсером "
-                "(NL-экстрактор вернул пустой запрос). "
-                "Извлечены только факты из текста.\n"
-                "💡 Попробуйте переформулировать вопрос."
-            )
+            status += t(lang, "dialog_unrecognized")
 
-    status += _dialog_hint_for_no_solution(result, dlg_state)
+    status += _dialog_hint_for_no_solution(result, dlg_state, lang)
 
     return (g, dlg_state, result, _status_html(status),
-            _dialog_transcript_str(dlg_state),
-            _dialog_pending_html(dlg_state))
+            _dialog_transcript_str(dlg_state, lang),
+            _dialog_pending_html(dlg_state, lang))
 
 
-def h_dialog_answer(g, text, t2p_cls, dlg_state):
-    """NL-ответ на pending-вопрос через DialogTurn.answer()."""
+def h_dialog_answer(g, text, t2p_cls, dlg_state, lang: str = "en"):
+    """NL answer to the pending question via DialogTurn.answer()."""
     g = _safe(g)
     text = (text or "").strip()
-    cur_t = _dialog_transcript_str(dlg_state)
-    cur_p = _dialog_pending_html(dlg_state)
+    cur_t = _dialog_transcript_str(dlg_state, lang)
+    cur_p = _dialog_pending_html(dlg_state, lang)
 
     if not text:
         return (g, dlg_state, {},
-                _status_html("✗ Пустой ответ"), cur_t, cur_p)
+                _status_html(t(lang, "dialog_empty_answer")), cur_t, cur_p)
 
     if not _DIALOG_OK or dlg_state is None:
-        return (g, dlg_state, {"error": "диалог не инициализирован"},
-                _status_html(
-                    "✗ Диалог не инициализирован. "
-                    "Сначала нажмите «▶ Спросить»."
-                ), cur_t, cur_p)
+        return (g, dlg_state, {"error": "dialog not initialized"},
+                _status_html(t(lang, "dialog_not_initialized")),
+                cur_t, cur_p)
 
     try:
         facts, status = dlg_state.answer(g, text)
     except Exception as e:
         return (g, dlg_state, {"error": str(e)},
                 _status_html(f"✗ {e}"),
-                _dialog_transcript_str(dlg_state),
-                _dialog_pending_html(dlg_state))
+                _dialog_transcript_str(dlg_state, lang),
+                _dialog_pending_html(dlg_state, lang))
 
-    status = _dialog_apply_facts(g, facts, status)
+    status = _dialog_apply_facts(g, facts, status, lang)
 
     return (g, dlg_state, {"facts": facts} if facts else {},
             _status_html(status),
-            _dialog_transcript_str(dlg_state),
-            _dialog_pending_html(dlg_state))
+            _dialog_transcript_str(dlg_state, lang),
+            _dialog_pending_html(dlg_state, lang))
 
 
-def h_dialog_yes(g, t2p_cls, dlg_state):
+def h_dialog_yes(g, t2p_cls, dlg_state, lang: str = "en"):
     if dlg_state is None or not getattr(dlg_state, 'pending_query', ''):
         return (g, dlg_state, {},
-                _status_html(
-                    "ℹ️ Нет ожидающего вопроса. "
-                    "Сначала нажмите «▶ Спросить»."
-                ),
-                _dialog_transcript_str(dlg_state),
-                _dialog_pending_html(dlg_state))
-    return h_dialog_answer(g, "да", t2p_cls, dlg_state)
+                _status_html(t(lang, "dialog_no_pending")),
+                _dialog_transcript_str(dlg_state, lang),
+                _dialog_pending_html(dlg_state, lang))
+    return h_dialog_answer(g, "да", t2p_cls, dlg_state, lang)
 
 
-def h_dialog_no(g, t2p_cls, dlg_state):
+def h_dialog_no(g, t2p_cls, dlg_state, lang: str = "en"):
     if dlg_state is None or not getattr(dlg_state, 'pending_query', ''):
         return (g, dlg_state, {},
-                _status_html(
-                    "ℹ️ Нет ожидающего вопроса. "
-                    "Сначала нажмите «▶ Спросить»."
-                ),
-                _dialog_transcript_str(dlg_state),
-                _dialog_pending_html(dlg_state))
-    return h_dialog_answer(g, "нет", t2p_cls, dlg_state)
+                _status_html(t(lang, "dialog_no_pending")),
+                _dialog_transcript_str(dlg_state, lang),
+                _dialog_pending_html(dlg_state, lang))
+    return h_dialog_answer(g, "нет", t2p_cls, dlg_state, lang)
 
 
-def h_dialog_reset(g, dlg_state):
+def h_dialog_reset(g, dlg_state, lang: str = "en"):
     if dlg_state is not None and hasattr(dlg_state, 'reset'):
         try:
             dlg_state.reset()
         except Exception:
             pass
     return (dlg_state,
-            _status_html("✓ Диалог сброшен (pending очищен, история сохранена)"),
-            _dialog_transcript_str(dlg_state),
-            _dialog_pending_html(dlg_state))
+            _status_html(t(lang, "dialog_reset_ok")),
+            _dialog_transcript_str(dlg_state, lang),
+            _dialog_pending_html(dlg_state, lang))
 
 
 # =====================================================================
 # UI
 # =====================================================================
 def build_ui() -> gr.Blocks:
-    _blocks_kwargs = {"title": "KnowledgeGraph Editor"}
+    lang = _detect_system_lang()
+    print(f"[kg-editor] language: {lang} "
+          f"({t(lang, 'lang_override_hint')})",
+          file=_sys.stderr, flush=True)
+
+    _blocks_kwargs = {"title": t(lang, "title")}
     if not _LAUNCH_THEME:
         _blocks_kwargs.update(
             css=_GLOBAL_CSS,
@@ -1885,107 +2433,116 @@ def build_ui() -> gr.Blocks:
         sel_node_id = gr.State("")
         sel_edge_idx = gr.State("")
         dlg_state = gr.State(None)
+        lang_state = gr.State(lang)
 
         with gr.Row(equal_height=False):
-            # КОЛОНКА 1
+            # COLUMN 1
             with gr.Column(scale=2, min_width=300):
-                gr.HTML('<div class="col-head">📁 Граф / Проект</div>')
+                gr.HTML(
+                    f'<div class="col-head">{t(lang, "col_project")}</div>')
                 with gr.Row(equal_height=True):
                     open_btn = gr.Button(
-                        "📂 Открыть", size="sm",
+                        t(lang, "btn_open"), size="sm",
                         elem_classes=["compact-btn"])
-                    merge_btn = gr.Button(              # ← NEW
-                        "🔀 Объединить", size="sm",
+                    merge_btn = gr.Button(
+                        t(lang, "btn_merge"), size="sm",
                         elem_classes=["compact-btn"])
                     new_btn = gr.Button(
-                        "🆕 Создать", size="sm",
+                        t(lang, "btn_new"), size="sm",
                         elem_classes=["compact-btn"])
                     save_btn = gr.Button(
-                        "💾 Сохранить", size="sm",
+                        t(lang, "btn_save"), size="sm",
                         elem_classes=["compact-btn"])
                     example_btn = gr.Button(
-                        "📚", size="sm", scale=0,
+                        t(lang, "btn_example"), size="sm", scale=0,
                         elem_classes=["compact-btn"])
 
-                stats_html = gr.HTML(_stats_html(KnowledgeGraph()))
+                stats_html = gr.HTML(_stats_html(KnowledgeGraph(), lang))
                 project_status = gr.HTML(_status_html(""))
 
-                with gr.Accordion("📝 Импорт из НЛ", open=False):
-                    nl_package_status = gr.HTML(_nl_package_status_html())
+                with gr.Accordion(t(lang, "nl_import_title"), open=False):
+                    nl_package_status = gr.HTML(
+                        _nl_package_status_html(lang))
 
                     text_file_input = gr.File(
-                        label="Файл (txt, pdf, docx, fb2)",
+                        label=t(lang, "nl_file_label"),
                         file_types=[".txt", ".pdf", ".docx", ".fb2"],
                         elem_classes=["compact-file"])
                     file_status = gr.HTML("")
                     open_modal_btn = gr.Button(
-                        "📝 Открыть текст", size="sm", visible=False,
+                        t(lang, "nl_open_text_btn"), size="sm",
+                        visible=False,
                         elem_classes=["compact-btn"])
 
                     nl_text = gr.Textbox(
-                        label="Краткий текст", lines=3,
+                        label=t(lang, "nl_short_text_label"), lines=3,
                         elem_classes=["compact-tb"])
                     with gr.Row(equal_height=True,
                                 elem_classes=["nowrap-row"]):
                         btn_full_graph = gr.Button(
-                            "📊 Факты", size="sm", scale=1, min_width=0,
+                            t(lang, "nl_btn_facts"), size="sm",
+                            scale=1, min_width=0,
                             elem_classes=["compact-btn"],
                             variant="primary")
                         btn_extract_query = gr.Button(
-                            "❓ Запрос", size="sm", scale=1, min_width=0,
+                            t(lang, "nl_btn_query"), size="sm",
+                            scale=1, min_width=0,
                             elem_classes=["compact-btn"])
                         clear_text_btn = gr.Button(
-                            "🗑️", size="sm", scale=0, min_width=0,
+                            t(lang, "nl_btn_clear"), size="sm",
+                            scale=0, min_width=0,
                             elem_classes=["compact-btn"])
 
                     log_filtered_cb = gr.Checkbox(
-                        label="🛡️ Логировать отфильтрованное", value=True)
-                    nl_status = gr.HTML(_status_html("Готов."))
+                        label=t(lang, "nl_log_filtered"), value=True)
+                    nl_status = gr.HTML(
+                        _status_html(t(lang, "nl_status_ready")))
 
                     with gr.Accordion(
-                        "⚙️ Пользовательский конвертер",
+                        t(lang, "custom_conv_title"),
                         open=not _T2P_OK,
                     ):
                         t2p_path_in = gr.Textbox(
-                            placeholder="Путь к .py-файлу",
+                            placeholder=t(lang, "t2p_path_placeholder"),
                             show_label=False, lines=1,
                             elem_classes=["compact-tb"])
                         with gr.Row(equal_height=True):
                             t2p_pick_btn = gr.Button(
-                                "📂 Выбрать", size="sm",
+                                t(lang, "t2p_pick"), size="sm",
                                 elem_classes=["compact-btn"])
                             t2p_load_btn = gr.Button(
-                                "✅ Загрузить", size="sm",
+                                t(lang, "t2p_load"), size="sm",
                                 elem_classes=["compact-btn"])
                             t2p_reset_btn = gr.Button(
-                                "↺ Встроенный", size="sm",
+                                t(lang, "t2p_reset"), size="sm",
                                 elem_classes=["compact-btn"])
                         t2p_status = gr.HTML(_status_html(
-                            "Встроенный" if _T2P_OK else "Недоступен"))
+                            t(lang, "t2p_status_builtin") if _T2P_OK
+                            else t(lang, "t2p_status_unavailable")))
 
-                with gr.Accordion("📥 Импорт из Prolog", open=False):
+                with gr.Accordion(t(lang, "imp_prolog_title"), open=False):
                     import_code = gr.Code(
                         language=None, lines=8,
-                        value="% Вставьте Prolog-код")
+                        value=t(lang, "paste_prolog"))
                     import_btn = gr.Button(
-                        "📥 Разобрать", size="sm",
+                        t(lang, "imp_prolog_btn"), size="sm",
                         elem_classes=["compact-btn"])
-                    #import_status = gr.HTML(_status_html("Готов."))
 
-                with gr.Accordion("🔬 Диагностика", open=False):
+                with gr.Accordion(t(lang, "diag_title"), open=False):
                     diag_btn = gr.Button(
-                        "🔄 Показать", size="sm",
+                        t(lang, "diag_show"), size="sm",
                         elem_classes=["compact-btn"])
                     diag_json = gr.JSON(label="", show_label=False)
 
-            # КОЛОНКА 2
+            # COLUMN 2
             with gr.Column(scale=5, min_width=500):
-                gr.HTML('<div class="col-head">🧩 Редактор графа</div>')
+                gr.HTML(
+                    f'<div class="col-head">{t(lang, "col_editor")}</div>')
 
                 with gr.Tabs():
-                    with gr.Tab("Узлы"):
+                    with gr.Tab(t(lang, "tab_nodes")):
                         nodes_tbl = gr.Dataframe(
-                            headers=["id", "type", "degree"],
+                            headers=t(lang, "nodes_headers"),
                             datatype=["str", "html", "str"],
                             type="array",
                             interactive=False,
@@ -1993,38 +2550,46 @@ def build_ui() -> gr.Blocks:
                             elem_classes=["compact-table"])
                         with gr.Row(equal_height=True):
                             nid_in = gr.Textbox(
-                                placeholder="id (apple)",
+                                placeholder=t(lang, "nodes_id_placeholder"),
                                 show_label=False, scale=2,
                                 elem_classes=["compact-tb"])
                             ntype_in = gr.Textbox(
-                                placeholder="type (org, person...)",
+                                placeholder=t(lang,
+                                            "nodes_type_placeholder"),
                                 show_label=False, scale=2,
                                 elem_classes=["compact-tb"])
                             add_node_btn = gr.Button(
-                                "➕", size="sm", scale=1, min_width=0,
+                                t(lang, "nodes_add_btn"), size="sm",
+                                scale=1, min_width=0,
                                 elem_classes=["compact-btn"])
 
                         with gr.Row(equal_height=True):
                             edit_node_id_in = gr.Textbox(
-                                placeholder="ID", show_label=False, scale=2,
+                                placeholder=t(lang,
+                                            "nodes_edit_id_placeholder"),
+                                show_label=False, scale=2,
                                 elem_classes=["compact-tb"])
                             edit_node_type_in = gr.Textbox(
-                                placeholder="Type", show_label=False, scale=2,
+                                placeholder=t(lang,
+                                            "nodes_edit_type_placeholder"),
+                                show_label=False, scale=2,
                                 elem_classes=["compact-tb"])
                             edit_node_btn = gr.Button(
-                                "💾", size="sm", scale=1, min_width=0,
+                                t(lang, "nodes_edit_btn"), size="sm",
+                                scale=1, min_width=0,
                                 elem_classes=["compact-btn"])
                             del_node_btn = gr.Button(
-                                "🗑️", size="sm", scale=1, min_width=0,
+                                t(lang, "nodes_del_btn"), size="sm",
+                                scale=1, min_width=0,
                                 elem_classes=["compact-btn"])
 
                         node_msg = gr.Textbox(
                             label="", show_label=False, interactive=False,
                             lines=1, elem_classes=["compact-tb"])
 
-                    with gr.Tab("Рёбра"):
+                    with gr.Tab(t(lang, "tab_edges")):
                         edges_tbl = gr.Dataframe(
-                            headers=["idx", "source", "predicate", "target"],
+                            headers=t(lang, "edges_headers"),
                             datatype=["str", "html", "html", "html"],
                             type="array",
                             interactive=False,
@@ -2032,183 +2597,209 @@ def build_ui() -> gr.Blocks:
                             elem_classes=["compact-table"])
                         with gr.Row(equal_height=True):
                             esrc_in = gr.Textbox(
-                                placeholder="source", show_label=False,
+                                placeholder=t(lang,
+                                            "edges_src_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             etgt_in = gr.Textbox(
-                                placeholder="target", show_label=False,
+                                placeholder=t(lang,
+                                            "edges_tgt_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             epred_in = gr.Textbox(
-                                placeholder="predicate", show_label=False,
+                                placeholder=t(lang,
+                                            "edges_pred_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             add_edge_btn = gr.Button(
-                                "➕", size="sm", scale=1, min_width=0,
+                                t(lang, "edges_add_btn"), size="sm",
+                                scale=1, min_width=0,
                                 elem_classes=["compact-btn"])
 
                         with gr.Row(equal_height=True):
                             edit_edge_src_in = gr.Textbox(
-                                placeholder="Source", show_label=False,
+                                placeholder=t(lang,
+                                            "edges_edit_src_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             edit_edge_tgt_in = gr.Textbox(
-                                placeholder="Target", show_label=False,
+                                placeholder=t(lang,
+                                            "edges_edit_tgt_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             edit_edge_pred_in = gr.Textbox(
-                                placeholder="Predicate", show_label=False,
+                                placeholder=t(lang,
+                                            "edges_edit_pred_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             edit_edge_btn = gr.Button(
-                                "💾", size="sm", scale=1, min_width=0,
+                                t(lang, "edges_edit_btn"), size="sm",
+                                scale=1, min_width=0,
                                 elem_classes=["compact-btn"])
                             del_edge_btn = gr.Button(
-                                "🗑️", size="sm", scale=1, min_width=0,
+                                t(lang, "edges_del_btn"), size="sm",
+                                scale=1, min_width=0,
                                 elem_classes=["compact-btn"])
 
                         edge_msg = gr.Textbox(
                             label="", show_label=False, interactive=False,
                             lines=1, elem_classes=["compact-tb"])
 
-                    with gr.Tab("Атрибуты"):
-                        attrs_tbl = gr.HTML(_attrs_html(KnowledgeGraph()))
+                    with gr.Tab(t(lang, "tab_attrs")):
+                        attrs_tbl = gr.HTML(
+                            _attrs_html(KnowledgeGraph(), lang))
                         with gr.Row(equal_height=True):
                             aent_in = gr.Textbox(
-                                placeholder="entity", show_label=False,
+                                placeholder=t(lang,
+                                            "attrs_ent_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             aname_in = gr.Textbox(
-                                placeholder="name", show_label=False,
+                                placeholder=t(lang,
+                                            "attrs_name_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             aval_in = gr.Textbox(
-                                placeholder="value", show_label=False,
+                                placeholder=t(lang,
+                                            "attrs_value_placeholder"),
+                                show_label=False,
                                 scale=2, elem_classes=["compact-tb"])
                             add_attr_btn = gr.Button(
-                                "➕", size="sm", scale=1, min_width=0,
+                                t(lang, "attrs_add_btn"), size="sm",
+                                scale=1, min_width=0,
                                 elem_classes=["compact-btn"])
                         with gr.Row(equal_height=True):
                             del_attr_dd = gr.Dropdown(
-                                choices=[], label="Удалить",
+                                choices=[],
+                                label=t(lang, "attrs_del_placeholder"),
                                 show_label=False, scale=4)
                             del_attr_btn = gr.Button(
-                                "🗑️", size="sm", scale=1, min_width=0,
+                                t(lang, "attrs_del_btn"), size="sm",
+                                scale=1, min_width=0,
                                 elem_classes=["compact-btn"])
                         attr_msg = gr.Textbox(
                             label="", show_label=False, interactive=False,
                             lines=1, elem_classes=["compact-tb"])
 
-                    with gr.Tab("🛡️ Отфильтровано"):
-                        filtered_tbl = gr.HTML(_empty_table_html(
-                            "Нет данных. Включите логирование."))
+                    with gr.Tab(t(lang, "tab_filtered")):
+                        filtered_tbl = gr.HTML(
+                            _empty_table_html(t(lang, "filtered_empty")))
 
-                    with gr.Tab("💬 Диалог"):
+                    with gr.Tab(t(lang, "tab_dialog")):
                         if not _DIALOG_OK:
-                            gr.HTML(_dialog_unavailable_banner())
+                            gr.HTML(_dialog_unavailable_banner(lang))
 
                         with gr.Column(visible=_DIALOG_OK):
                             gr.HTML(
                                 '<div style="font-size:11px;color:#8b949e;'
                                 'margin-bottom:6px;line-height:1.5;">'
-                                'Задайте вопрос или утверждение на '
-                                'естественном языке. '
-                                'Вопрос → попытка найти ответ в графе. '
-                                'Утверждение → извлечённые факты добавятся '
-                                'в граф. Если ответ не найден — уточните '
-                                '(✅/❌) или введите новый текст.'
+                                f'{t(lang, "dialog_help")}'
                                 '</div>'
                             )
 
                             dialog_pending = gr.HTML(_empty_table_html(
-                                "Диалог не начат. Введите вопрос и нажмите "
-                                "«▶ Спросить»."))
+                                t(lang, "dialog_not_started")))
 
                             dlg_text = gr.Textbox(
                                 label="", show_label=False,
-                                placeholder="Например: У меня есть лицензия?",
+                                placeholder=t(lang,
+                                              "dialog_text_placeholder"),
                                 lines=3, elem_classes=["compact-tb"])
 
                             with gr.Row(equal_height=True):
                                 dlg_ask_btn = gr.Button(
-                                    "▶ Спросить", size="sm",
+                                    t(lang, "dialog_ask"), size="sm",
                                     scale=1, min_width=0,
                                     elem_classes=["compact-btn"],
                                     variant="primary")
                                 dlg_answer_btn = gr.Button(
-                                    "💬 Ответить", size="sm",
+                                    t(lang, "dialog_answer"), size="sm",
                                     scale=1, min_width=0,
                                     elem_classes=["compact-btn"])
                                 dlg_yes_btn = gr.Button(
-                                    "✅", size="sm",
+                                    t(lang, "dialog_yes"), size="sm",
                                     scale=0, min_width=0,
                                     elem_classes=["compact-btn"])
                                 dlg_no_btn = gr.Button(
-                                    "❌", size="sm",
+                                    t(lang, "dialog_no"), size="sm",
                                     scale=0, min_width=0,
                                     elem_classes=["compact-btn"])
                                 dlg_reset_btn = gr.Button(
-                                    "🗑️", size="sm",
+                                    t(lang, "dialog_reset"), size="sm",
                                     scale=0, min_width=0,
                                     elem_classes=["compact-btn"])
 
                             dlg_status_html = gr.HTML(
-                                _status_html("Готов к диалогу"))
+                                _status_html(t(lang, "dialog_status_ready")))
                             dlg_result = gr.JSON(label="", show_label=False)
 
-                            gr.HTML('<div class="col-head">📜 Транскрипт</div>')
+                            gr.HTML(
+                                f'<div class="col-head">'
+                                f'{t(lang, "dialog_transcript_head")}'
+                                f'</div>')
                             dlg_transcript_box = gr.Textbox(
                                 label="", show_label=False,
                                 interactive=False, lines=10,
-                                value="(диалог не начат)",
+                                value=t(lang, "dialog_transcript_none"),
                                 elem_classes=["compact-tb"])
 
-                    with gr.Tab("Prolog source"):
-                        src_preview = gr.HTML(_prolog_code_html(""))
-                        with gr.Accordion("✏️ Редактировать", open=False):
+                    with gr.Tab(t(lang, "tab_source")):
+                        src_preview = gr.HTML(_prolog_code_html("", lang))
+                        with gr.Accordion(t(lang, "src_edit_accordion"),
+                                          open=False):
                             src_code = gr.Code(
                                 language=None, lines=18,
-                                value="% Нажмите 🔄")
+                                value=t(lang, "src_code_placeholder"))
                         with gr.Row(equal_height=True):
                             serialize_btn = gr.Button(
-                                "🔄 Обновить из графа", size="sm",
+                                t(lang, "src_refresh_btn"), size="sm",
                                 elem_classes=["compact-btn"])
                             parse_src_btn = gr.Button(
-                                "📥 Применить", size="sm",
+                                t(lang, "src_apply_btn"), size="sm",
                                 elem_classes=["compact-btn"])
-                        src_status = gr.HTML(_status_html("Готов."))
+                        src_status = gr.HTML(
+                            _status_html(t(lang, "src_ready")))
 
-            # КОЛОНКА 3
+            # COLUMN 3
             with gr.Column(scale=4, min_width=420):
                 gr.HTML(
-                    '<div class="col-head">🖼️ Визуализация (PyVis)</div>')
+                    f'<div class="col-head">{t(lang, "col_visual")}</div>')
                 graph_html = gr.HTML(render_pyvis(None))
 
-                gr.HTML('<div class="col-head">🔎 Запросы</div>')
+                gr.HTML(
+                    f'<div class="col-head">{t(lang, "col_queries")}</div>')
                 query_in = gr.Textbox(
-                    placeholder="edge(X, Y, owns).", lines=3,
+                    placeholder=t(lang, "query_placeholder"), lines=3,
                     show_label=False, elem_classes=["compact-tb"])
                 with gr.Row(equal_height=True):
                     run_q_btn = gr.Button(
-                        "▶ Запрос", size="sm",
+                        t(lang, "query_run_btn"), size="sm",
                         elem_classes=["compact-btn"])
                     help_btn = gr.Button(
-                        "ℹ️ Помощь", size="sm",
+                        t(lang, "query_help_btn"), size="sm",
                         elem_classes=["compact-btn"])
 
                 query_status = gr.Textbox(
                     label="", show_label=False, interactive=False,
                     lines=1, elem_classes=["compact-tb"])
-                query_out = gr.JSON(label="Решения", show_label=False)
+                query_out = gr.JSON(label="Solutions", show_label=False)
 
                 if not _AGENT_OK:
-                    gr.Markdown("⚠️ PyAgentProlog не загружен")
+                    gr.Markdown(t(lang, "query_agent_not_loaded"))
 
-        # Модальное окно
+        # Modal window
         with gr.Column(visible=False,
                        elem_classes=["modal-overlay"]) as modal_col:
             with gr.Column(elem_classes=["modal-content"]):
-                gr.HTML('<div class="col-head">📄 Текст</div>')
+                gr.HTML('<div class="col-head">📄 Text</div>')
                 modal_text = gr.Textbox(
                     lines=20, show_label=False,
                     elem_classes=["modal-textarea"])
                 with gr.Row():
                     modal_apply_btn = gr.Button(
-                        "✅ Применить", size="sm", variant="primary")
+                        "✅ Apply", size="sm", variant="primary")
                     modal_cancel_btn = gr.Button(
-                        "❌ Отмена", size="sm")
+                        "❌ Cancel", size="sm")
 
         # =================================================================
         # Wiring
@@ -2218,110 +2809,113 @@ def build_ui() -> gr.Blocks:
             stats_html, graph_html,
         ]
 
-        # Настройки конвертера
+        # Converter settings
         t2p_pick_btn.click(_h_pick_t2p, [], [t2p_path_in])
 
         t2p_load_btn.click(
-            h_load_t2p_module, [t2p_path_in], [t2p_cls_state, t2p_status],
+            h_load_t2p_module, [t2p_path_in, lang_state],
+            [t2p_cls_state, t2p_status],
         ).then(
-            lambda c: _nl_package_status_html(t2p_custom=(c is not None)),
-            [t2p_cls_state],
+            lambda c, l: _nl_package_status_html(l, t2p_custom=(c is not None)),
+            [t2p_cls_state, lang_state],
             [nl_package_status],
         ).then(
             lambda: None, [], [dlg_state],
         )
 
         t2p_reset_btn.click(
-            lambda: (None, _status_html("↺ Сброшено")),
-            [],
+            lambda l: (None, _status_html(t(l, "t2p_reset_done"))),
+            [lang_state],
             [t2p_cls_state, t2p_status],
         ).then(
-            lambda: _nl_package_status_html(),
-            [],
+            lambda l: _nl_package_status_html(l),
+            [lang_state],
             [nl_package_status],
         ).then(
             lambda: None, [], [dlg_state],
         )
 
-        # Импорт НЛ
+        # NL import
         text_file_input.upload(
-            h_load_text_file, [text_file_input],
+            h_load_text_file, [text_file_input, lang_state],
             [nl_text_state, file_status, open_modal_btn, modal_col])
         open_modal_btn.click(
             h_open_modal, [nl_text_state], [modal_col, modal_text])
         modal_apply_btn.click(
-            h_apply_modal, [modal_text],
+            h_apply_modal, [modal_text, lang_state],
             [modal_col, nl_text_state, file_status])
         modal_cancel_btn.click(
             lambda: gr.update(visible=False), [], [modal_col])
         clear_text_btn.click(
-            h_clear_nl, [],
+            h_clear_nl, [lang_state],
             [nl_text, nl_text_state, file_status, open_modal_btn, modal_col])
 
         btn_full_graph.click(
             h_import_full_graph,
             [graph_state, nl_text, nl_text_state, t2p_cls_state,
-             log_filtered_cb],
+             log_filtered_cb, lang_state],
             [nl_status, graph_state, filtered_tbl],
         ).then(
-            lambda g: _refresh(g), [graph_state], refresh_outs)
+            lambda g, l: _refresh(g, l), [graph_state, lang_state],
+            refresh_outs)
 
         btn_extract_query.click(
             h_extract_query,
-            [nl_text, nl_text_state, t2p_cls_state],
+            [nl_text, nl_text_state, t2p_cls_state, lang_state],
             [query_in, nl_status])
 
         import_btn.click(
-            h_parse_source, [graph_state, import_code],
+            h_parse_source, [graph_state, import_code, lang_state],
             [graph_state, src_status],
         ).then(
-            lambda g: _refresh(g), [graph_state], refresh_outs)
+            lambda g, l: _refresh(g, l), [graph_state, lang_state],
+            refresh_outs)
 
-        # Проект
+        # Project
         open_btn.click(
-            h_open_file, [graph_state],
+            h_open_file, [graph_state, lang_state],
             refresh_outs + [project_status],
         ).then(
-            _serialize_and_preview, [graph_state],
+            _serialize_and_preview, [graph_state, lang_state],
             [src_code, src_preview],
         ).then(
             lambda: None, [], [dlg_state],
         )
         new_btn.click(
-            h_new_project, [graph_state],
+            h_new_project, [graph_state, lang_state],
             refresh_outs + [project_status],
         ).then(
-            _serialize_and_preview, [graph_state],
+            _serialize_and_preview, [graph_state, lang_state],
             [src_code, src_preview],
         ).then(
             lambda: None, [], [dlg_state],
         )
         example_btn.click(
-            h_load_example, [graph_state],
+            h_load_example, [graph_state, lang_state],
             refresh_outs + [project_status],
         ).then(
-            _serialize_and_preview, [graph_state],
+            _serialize_and_preview, [graph_state, lang_state],
             [src_code, src_preview],
         ).then(
             lambda: None, [], [dlg_state],
         )
         merge_btn.click(
-            h_merge_file, [graph_state],
+            h_merge_file, [graph_state, lang_state],
             refresh_outs + [project_status],
         ).then(
-            _serialize_and_preview, [graph_state],
+            _serialize_and_preview, [graph_state, lang_state],
             [src_code, src_preview],
         )
-        # dlg_state НЕ сбрасываем: merge аддитивен, текущий диалог
-        # остаётся валидным. Если пользователю нужен чистый диалог —
-        # он нажмёт 🗑️ на вкладке «💬 Диалог».        
+        # dlg_state is NOT reset: merge is additive, the current dialog
+        # remains valid. If the user wants a clean dialog — press 🗑️
+        # on the "💬 Dialog" tab.
         save_btn.click(
-            h_save_file, [graph_state, current_path],
+            h_save_file, [graph_state, current_path, lang_state],
             [project_status, current_path])
 
-        # Узлы
+        # Nodes
         add_node_btn.click(
-            h_add_node, [graph_state, nid_in, ntype_in],
+            h_add_node, [graph_state, nid_in, ntype_in, lang_state],
             refresh_outs + [nid_in, node_msg])
 
         nodes_tbl.select(
@@ -2330,16 +2924,18 @@ def build_ui() -> gr.Blocks:
 
         edit_node_btn.click(
             h_edit_node,
-            [graph_state, sel_node_id, edit_node_id_in, edit_node_type_in],
+            [graph_state, sel_node_id, edit_node_id_in,
+             edit_node_type_in, lang_state],
             refresh_outs + [node_msg])
 
         del_node_btn.click(
-            h_del_node_selected, [graph_state, sel_node_id],
+            h_del_node_selected, [graph_state, sel_node_id, lang_state],
             refresh_outs + [node_msg])
 
-        # Рёбра
+        # Edges
         add_edge_btn.click(
-            h_add_edge, [graph_state, esrc_in, etgt_in, epred_in],
+            h_add_edge, [graph_state, esrc_in, etgt_in, epred_in,
+                         lang_state],
             refresh_outs + [esrc_in, etgt_in, edge_msg])
 
         edges_tbl.select(
@@ -2350,42 +2946,45 @@ def build_ui() -> gr.Blocks:
         edit_edge_btn.click(
             h_edit_edge,
             [graph_state, sel_edge_idx, edit_edge_src_in,
-             edit_edge_tgt_in, edit_edge_pred_in],
+             edit_edge_tgt_in, edit_edge_pred_in, lang_state],
             refresh_outs + [edge_msg])
 
         del_edge_btn.click(
-            h_del_edge_selected, [graph_state, sel_edge_idx],
+            h_del_edge_selected, [graph_state, sel_edge_idx, lang_state],
             refresh_outs + [edge_msg])
 
-        # Атрибуты
+        # Attributes
         add_attr_btn.click(
-            h_add_attr, [graph_state, aent_in, aname_in, aval_in],
+            h_add_attr, [graph_state, aent_in, aname_in, aval_in,
+                         lang_state],
             refresh_outs + [aent_in, aname_in, attr_msg])
-        del_attr_btn.click(h_del_attr, [graph_state, del_attr_dd], refresh_outs)
+        del_attr_btn.click(
+            h_del_attr, [graph_state, del_attr_dd, lang_state],
+            refresh_outs)
 
         # Prolog Source
         serialize_btn.click(
-            _serialize_and_preview, [graph_state],
+            _serialize_and_preview, [graph_state, lang_state],
             [src_code, src_preview])
         src_code.change(
-            lambda s: _prolog_code_html(s or ""),
-            [src_code], [src_preview])
+            lambda s, l: _prolog_code_html(s or "", l),
+            [src_code, lang_state], [src_preview])
         parse_src_btn.click(
-            h_parse_source, [graph_state, src_code],
+            h_parse_source, [graph_state, src_code, lang_state],
             [graph_state, src_status],
         ).then(
-            lambda g: _refresh(g), [graph_state], refresh_outs)
+            lambda g, l: _refresh(g, l), [graph_state, lang_state],
+            refresh_outs)
 
-        # Запросы
+        # Queries
         run_q_btn.click(
-            h_query, [graph_state, query_in],
+            h_query, [graph_state, query_in, lang_state],
             [query_out, query_status])
         help_btn.click(
-            lambda: _status_html(
-                "Доступно: edge/2,3 node/2,3 attribute/3 findall/3 и т.д."),
-            [], [query_status])
+            lambda l: _status_html(t(l, "query_help_text")),
+            [lang_state], [query_status])
 
-        # Диалог
+        # Dialog
         _dialog_outputs = [
             graph_state, dlg_state, dlg_result, dlg_status_html,
             dlg_transcript_box, dialog_pending,
@@ -2393,39 +2992,44 @@ def build_ui() -> gr.Blocks:
 
         dlg_ask_btn.click(
             h_dialog_ask,
-            [graph_state, dlg_text, t2p_cls_state, dlg_state],
+            [graph_state, dlg_text, t2p_cls_state, dlg_state, lang_state],
             _dialog_outputs,
         ).then(
-            lambda g: _refresh(g), [graph_state], refresh_outs)
+            lambda g, l: _refresh(g, l), [graph_state, lang_state],
+            refresh_outs)
 
         dlg_answer_btn.click(
             h_dialog_answer,
-            [graph_state, dlg_text, t2p_cls_state, dlg_state],
+            [graph_state, dlg_text, t2p_cls_state, dlg_state, lang_state],
             _dialog_outputs,
         ).then(
-            lambda g: _refresh(g), [graph_state], refresh_outs)
+            lambda g, l: _refresh(g, l), [graph_state, lang_state],
+            refresh_outs)
 
         dlg_yes_btn.click(
             h_dialog_yes,
-            [graph_state, t2p_cls_state, dlg_state],
+            [graph_state, t2p_cls_state, dlg_state, lang_state],
             _dialog_outputs,
         ).then(
-            lambda g: _refresh(g), [graph_state], refresh_outs)
+            lambda g, l: _refresh(g, l), [graph_state, lang_state],
+            refresh_outs)
 
         dlg_no_btn.click(
             h_dialog_no,
-            [graph_state, t2p_cls_state, dlg_state],
+            [graph_state, t2p_cls_state, dlg_state, lang_state],
             _dialog_outputs,
         ).then(
-            lambda g: _refresh(g), [graph_state], refresh_outs)
+            lambda g, l: _refresh(g, l), [graph_state, lang_state],
+            refresh_outs)
 
         dlg_reset_btn.click(
             h_dialog_reset,
-            [graph_state, dlg_state],
-            [dlg_state, dlg_status_html, dlg_transcript_box, dialog_pending],
+            [graph_state, dlg_state, lang_state],
+            [dlg_state, dlg_status_html, dlg_transcript_box,
+             dialog_pending],
         )
 
-        # Диагностика
+        # Diagnostics
         diag_btn.click(
             lambda g, c, ds: {
                 "summary": _safe(g).summary(),
